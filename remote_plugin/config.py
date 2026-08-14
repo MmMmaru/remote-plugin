@@ -10,6 +10,9 @@ from typing import Any, Iterator
 
 _PROJECT_FILENAME = "machines.json"
 _USER_CONFIG = Path.home() / ".config" / "remote-plugin" / "machines.json"
+# remote-plugin 仓库根（`remote` 入口脚本所在目录）：找不到任何项目级
+# `.remote` 时的默认状态落点。
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 
 class RemotePluginError(Exception):
@@ -78,12 +81,17 @@ def find_remote_dir(start_dir: Path | None = None) -> Path | None:
 
 
 def state_dir(start_dir: Path | None = None) -> Path:
-    """解析状态目录 `<repo>/.remote/state`，无项目级则用用户级；不存在则创建。"""
+    """解析状态目录 `<repo>/.remote/state`。
+
+    从 start_dir（缺省 cwd）向上找到最近的 `.remote` 则用其 `state/`；
+    找不到任何 `.remote` 时，默认落到 remote-plugin 仓库自身的 `.remote/state`
+    （即 `remote` 入口脚本所在目录下），不存在则创建。
+    """
     remote_dir = find_remote_dir(start_dir)
     if remote_dir is not None:
         path = remote_dir / "state"
     else:
-        path = Path.home() / ".config" / "remote-plugin" / "state"
+        path = _PACKAGE_ROOT / ".remote" / "state"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

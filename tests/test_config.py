@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from remote_plugin import config
 
@@ -122,6 +123,27 @@ class TestResolveEndpoint(_TempDir):
         self.assertEqual(ep.port, 22)
         self.assertEqual(ep.container, "c1")
         self.assertEqual(ep.workspace_root, "/ws")
+
+
+class TestStateDir(_TempDir):
+    def test_fallback_to_repo_remote_when_no_project_remote(self):
+        """向上找不到任何 `.remote` 时，默认落到 remote-plugin 仓库自身 `.remote/state`。"""
+        with mock.patch.object(config, "find_remote_dir", return_value=None), \
+             mock.patch.object(config, "_PACKAGE_ROOT", self.root):
+            sd = config.state_dir(self.root / "sub" / "dir")
+        self.assertEqual(sd, self.root / ".remote" / "state")
+        self.assertTrue(sd.is_dir())
+
+    def test_project_remote_wins_over_fallback(self):
+        """向上找到 `.remote` 时用它，不落到仓库默认位置。"""
+        project_remote = self.root / "proj" / ".remote"
+        project_remote.mkdir(parents=True)
+        with mock.patch.object(config, "find_remote_dir", return_value=project_remote), \
+             mock.patch.object(config, "_PACKAGE_ROOT", self.root / "pkg"):
+            sd = config.state_dir(self.root / "proj")
+        self.assertEqual(sd, project_remote / "state")
+        self.assertTrue(sd.is_dir())
+        self.assertFalse((self.root / "pkg" / ".remote").exists())
 
 
 if __name__ == "__main__":

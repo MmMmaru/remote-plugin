@@ -21,6 +21,8 @@ harness（Codex / Claude Code / deepseek-harness 等）零配置接入。
 ```
 
 机器注册 = 手写 `<repo>/.remote/machines.json`（机器对象数组）。含密码字段的该文件禁止入 git。
+状态目录从 cwd 向上找最近的 `.remote/state`；找不到任何 `.remote` 时默认落到
+remote-plugin 仓库自身的 `.remote/state`（`remote` 入口脚本所在目录下）。
 
 ## 三个功能域
 

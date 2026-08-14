@@ -267,6 +267,9 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
   endpoints/<alias>.json            # 模式 A 解析出的容器直连端点
 ```
 
+- 状态目录解析：从 cwd 向上找最近的 `.remote`，用其 `state/`；**找不到任何
+  `.remote` 时，默认落到 remote-plugin 仓库自身的 `.remote/state`**（即 `remote`
+  入口脚本所在目录下），不存在则创建，不报错。
 - 所有变更一律写文件；CLI 只做读取与触发
 - `state/` 不入 git（自动写 `.gitignore`）
 

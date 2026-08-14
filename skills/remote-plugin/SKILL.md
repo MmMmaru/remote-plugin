@@ -76,6 +76,8 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 ## 机器未注册时
 
 `remote` 的所有命令都依赖 `.remote/machines.json`（项目级，从 cwd 向上查找）。
+状态目录（jobs/机器档案/endpoints）同样向上找最近的 `.remote/state`；找不到任何
+`.remote` 时默认落到 remote-plugin 仓库自身的 `.remote/state`。
 目标机器不在其中时，**不要凭空猜配置，经对话问人类补齐后写进 `.remote/machines.json`**：
 
 1. 问人类要：`alias`、`mode`（container/ssh）、`host`、`port`、`user`、密码（仅首次 `up` 用）、
