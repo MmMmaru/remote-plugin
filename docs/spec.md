@@ -1,6 +1,6 @@
 # remote-plugin 实施规格（任务拆分）
 
-> 依据 `docs/PRD.md` v0.2。所有任务共用代码风格：纯标准库、系统 ssh、单文件 ≤600 行、CLI 输出"进度 stderr / 结果 stdout 单行 JSON"。
+> 依据 `docs/PRD.md` v0.2。所有任务共用代码风格：纯标准库、系统 ssh、CLI 输出"进度 stderr / 结果 stdout 单行 JSON"。
 > 端到端验证采用文档形式：每步标注 **[本地]**（子代理开发时自验）或 **[真机-串行]**（验收阶段按 workflow.md 的顺序对真机执行）。
 
 ## 测试机器

@@ -50,7 +50,7 @@
 
 1. **网络 MTU 黑洞（已解决）**：到 `192.168.9.166` 的路径有效 MTU ≈1428 且 PMTUD 被吞（>1.4KB SSH 传输挂起）。由用户在客户端降 MTU（`sysctl tcp_mtu_probing=1` 或 `ip link set eth0 mtu 1400`）解决，非插件代码缺陷。
 2. **账户修正**：`machines.json` 原 `user: root` 实际应为 `admin123`（已改，密码仍 `Huawei@123`）。
-3. **内核行数**：合计 ~3.3K 行，超出 PRD「≤1500 行」目标（约 2.2×）；单文件 ≤600 约束满足。
+3. **行数要求（已裁决：取消）**：原 PRD「内核 ≤1500 行 / 单文件 ≤600 行」约束已取消，相关文档表述与 `test_machines.py` 的 600 行断言已移除。
 4. **后台超时默认值**：PRD 5.2 写「默认 30min」，但 `cli.py` `--timeout` 默认 600s（T3 子代理已标出，需裁决）。
 5. **npu-smi 利用率解析**：A2 的 `npu-smi info` 布局下 AICore% 取 `n/a`（best-effort），卡数与型号解析正确。
 6. **镜像漂移**：现有容器跑旧 nightly（64aed8655de9），配置写 `nightly-main`（当前 ade04e75aa4a）——按新策略仅告警不复建。

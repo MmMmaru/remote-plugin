@@ -7,7 +7,7 @@
 
 1. `cd remote-plugin && git init`
 2. 写 `.gitignore`（`state/`、`__pycache__`、`.temp`、`.log`）
-3. 写根 `AGENTS.md`（项目约定：纯标准库、输出契约、单文件 ≤600 行、commit 规范）与 `PROGRESS.md`
+3. 写根 `AGENTS.md`（项目约定：纯标准库、输出契约、commit 规范）与 `PROGRESS.md`
 4. 首次提交：`chore: init remote-plugin with PRD and spec`
 
 ## 阶段 1：T0 骨架（主代理直接执行，约 200 行）
@@ -26,7 +26,7 @@ T0 自验：compileall + spec.md T0 的 4 条 **[本地]** 步骤。通过后提
 >
 > 你的任务：**{{item}}**
 >
-> 硬性约束：纯标准库 + 系统 ssh；单文件 ≤600 行；只允许新建/修改你任务名下的文件与 `tests/` 下你的测试文件，**禁止改 `cli.py`、`config.py`、`ssh.py`、`output.py`**；函数签名与 spec.md 一致；纯函数配硬编码 unittest；**不 commit**；只执行你任务 e2e 中标注 **[本地]** 的步骤，**[真机-串行]** 步骤不许执行。
+> 硬性约束：纯标准库 + 系统 ssh；只允许新建/修改你任务名下的文件与 `tests/` 下你的测试文件，**禁止改 `cli.py`、`config.py`、`ssh.py`、`output.py`**；函数签名与 spec.md 一致；纯函数配硬编码 unittest；**不 commit**；只执行你任务 e2e 中标注 **[本地]** 的步骤，**[真机-串行]** 步骤不许执行。
 >
 > 完成后汇报：新建文件清单、函数与 spec 的对应关系、unittest 结果、[本地] e2e 逐步结果。
 

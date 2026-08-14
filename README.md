@@ -78,4 +78,4 @@ harness（Codex / Claude Code / deepseek-harness 等）零配置接入。
 
 ## 开发
 
-纯标准库，单文件 ≤600 行；`python3 -m unittest discover -s tests` 全绿。
+纯标准库；`python3 -m unittest discover -s tests` 全绿。

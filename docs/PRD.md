@@ -16,7 +16,6 @@
 - **唯一形态是 CLI**：`remote <子命令>`。人类在终端直接用；agent 通过自身 harness 的 bash/shell 工具调用同一条 CLI。**不做 MCP server**，任何能跑 shell 的 harness（Codex、Claude Code、deepseek-harness 等）零配置接入
 - **纯标准库 + 系统 ssh**：零第三方依赖，不引入 paramiko；文件与代码传输走 ssh 管道，不用 scp/sftp/rsync/sshpass/expect
 - **默认在容器内开发**：整个 workspace 位于容器内，默认路径 `/vllm-workspace`；VM 宿主机仅为容器维护面，不持有代码副本
-- **单文件 ≤600 行**（内核模块统一约束）
 - 输出契约：进度走 stderr，最终结果 stdout 单行 JSON，方便 agent 解析
 
 ## 2. 数据模型

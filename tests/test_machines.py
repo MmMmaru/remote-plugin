@@ -276,6 +276,7 @@ class TestMachineStatus(_Isolated):
 
 
 class TestHandlers(_Isolated):
+
     def _args(self, **kw):
         return argparse.Namespace(**kw)
 
@@ -308,17 +309,6 @@ class TestHandlers(_Isolated):
         self.assertEqual(result["alias"], "a")
         self.assertIn("npu", result)
         self.assertIn("reachable", result)
-
-
-class TestFileConstraints(unittest.TestCase):
-    def test_module_line_counts_within_600(self):
-        import remote_plugin.machines as mm
-        import remote_plugin.probes as pp
-
-        for mod in (mm, pp):
-            path = Path(mod.__file__)
-            lines = path.read_text(encoding="utf-8").splitlines()
-            self.assertLessEqual(len(lines), 600, f"{path.name} 超过 600 行: {len(lines)}")
 
 
 if __name__ == "__main__":
