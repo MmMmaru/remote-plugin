@@ -41,6 +41,7 @@ remote-plugin 仓库自身的 `.remote/state`（`remote` 入口脚本所在目�
 ```bash
 ./remote sync <alias> [--worktree <id>]          # 方法A：git 递归整树（字节级一致）
 ./remote sync <alias> --paths src/a.py tests/ [--worktree <id>]  # 方法B：指定路径热修补
+./remote pull <alias> <remote_path>... --dest <dir> [--worktree <id>]  # 从远端拉回文件/目录（profiling/benchmark 产物下载，sha256 校验）
 ```
 
 ### 3. 远程执行与日志

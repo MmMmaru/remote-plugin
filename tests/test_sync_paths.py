@@ -307,11 +307,11 @@ class TestSyncPathsPipeline(_TempBase):
         self.assertEqual(result.bytes, self.expected_bytes)
         self.assertEqual(result.to_dict()["status"], "ready")
 
-        # 本地 tar 命令：相对结构、目录原样传入（`--` 防路径以 `-` 开头被当选项）
+        # 本地 tar 命令：GNU tar（localtools 解析）、MSYS 路径、相对结构、目录原样传入（`--` 防路径以 `-` 开头被当选项）
+        from remote_plugin.localtools import gnu_tar, tar_path
         lc = pm.call_args.args[1]
-        self.assertEqual(
-            lc[:6], ["tar", "-C", str(self.local_root), "-cf", "-", "--"]
-        )
+        self.assertEqual(lc[0], gnu_tar())
+        self.assertEqual(lc[1:6], ["-C", tar_path(self.local_root), "-cf", "-", "--"])
         self.assertEqual(set(lc[6:]), {"a.sh", "crlf.txt", "docs"})
 
         # 远端命令：先 mkdir -p worktree，再 tar -x 覆盖（命令内为 MSYS 形式路径）

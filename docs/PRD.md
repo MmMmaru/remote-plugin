@@ -201,6 +201,7 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 - **内核函数**：`sync_paths(machine: Machine, worktree: str, paths: list[Path]) -> SyncResult`
 - **功能**：将指定文件/目录经 `tar | ssh` 覆盖到 worktree 对应相对路径；不做 git 语义，不进 mirror
 - 用于热修补、单文件调试；大目录请用方法 A
+- **反向（产物拉回）**：`remote pull <alias> <remote_path>... --dest <dir> [--worktree <id>]` 把远端文件/目录经 `tar | ssh` 二进制流拉回本地（相对路径按 worktree 解析，支持容器内绝对路径；远端 sha256 清单 + 本地重算比对，不一致 fail closed），用于 profiling/benchmark 产物下载
 
 ### 4.3 字节级一致（明确验收项）
 

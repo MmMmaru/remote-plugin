@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config, ssh
+from .localtools import gnu_tar, tar_path
 
 __all__ = ["SyncResult", "SyncPathsError", "sync_paths"]
 
@@ -175,8 +176,10 @@ def sync_paths(
     wt_dir = _remote_worktree_dir(endpoint, worktree)
 
     # 1) 本地 tar 打包（保留相对结构、二进制流）→ ssh | tar -x 覆盖到 worktree
+    # tar 经 localtools 解析 GNU 版本（Windows 上裸 "tar" 会命中 System32 bsdtar），
+    # 路径转 MSYS 形式（Git tar 不识别反斜杠 Windows 路径）
     local_cmd = [
-        "tar", "-C", str(root), "-cf", "-", "--",
+        gnu_tar(), "-C", tar_path(root), "-cf", "-", "--",
         *[r.as_posix() for r in rel_paths],
     ]
     remote_cmd = f"mkdir -p {_shq(wt_dir)} && tar -x -C {_shq(wt_dir)}"

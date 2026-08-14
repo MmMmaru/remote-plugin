@@ -25,6 +25,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "logs": ("remote_plugin.jobs", "cli_logs"),
     "stop": ("remote_plugin.jobs", "cli_stop"),
     "sync": ("remote_plugin.sync_git", "cli_sync"),
+    "pull": ("remote_plugin.pull", "cli_pull"),
 }
 
 
@@ -102,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("alias")
     p.add_argument("--worktree", default="main")
     p.add_argument("--paths", nargs="*", default=None, help="指定文件/路径（方法 B）")
+
+    p = sub.add_parser("pull", help="从远端拉回文件/目录到本地（产物下载）")
+    p.add_argument("alias")
+    p.add_argument("remote_paths", nargs="+", help="远端文件/目录（相对 worktree 或容器内绝对路径）")
+    p.add_argument("--dest", required=True, help="本地落点目录")
+    p.add_argument("--worktree", default="main")
 
     return parser
 
