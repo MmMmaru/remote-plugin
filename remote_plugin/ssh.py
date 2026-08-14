@@ -23,6 +23,9 @@ def _ssh_base(endpoint: Endpoint) -> list[str]:
         "-o", "ServerAliveCountMax=3",
         "-o", "StrictHostKeyChecking=accept-new",
         "-o", "LogLevel=ERROR",
+        # 优先 curve25519：sntrup761x25519 的 KEX 大包在部分链路会触发
+        # PMTUD 黑洞导致握手长时间挂起（实测 192.168.9.166），故显式首选。
+        "-o", "KexAlgorithms=curve25519-sha256",
         "-p", str(endpoint.port),
         f"{endpoint.user}@{endpoint.host}",
     ]
