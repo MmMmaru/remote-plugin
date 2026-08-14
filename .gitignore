@@ -1,0 +1,9 @@
+# 状态与运行产物（不入 git）
+state/
+.temp/
+.log
+__pycache__/
+*.pyc
+
+# 机器注册可能含密码等敏感字段，一律不入 git
+.remote/
