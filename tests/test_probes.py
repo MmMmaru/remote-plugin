@@ -49,7 +49,10 @@ class TestBuildProbeScript(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
 
     def test_npu_parse_awk_counts_devices(self):
-        """用 fake npu-smi 验证 awk：两行布局（名行+总线行）与仅名行布局都能计数。"""
+        """用 fake npu-smi 验证 awk：A2 两行布局（名行+总线行）与仅名行布局都能解析。
+
+        A2 `npu-smi info` 每卡两行，第二行 $3=Bus-Id、$4="AICore% Mem HBM"。
+        """
         import os
         import tempfile
         from pathlib import Path
@@ -60,10 +63,10 @@ class TestBuildProbeScript(unittest.TestCase):
             fake = bin_dir / "npu-smi"
             fake.write_text(
                 "#!/usr/bin/env bash\n"
-                'echo "| 0       910B4     | OK              | 77.1         50      |"\n'
-                'echo "| 0       0         | 0000:C1:00.0    | 33            0 / 0   |"\n'
-                'echo "| 1       910B4     | OK              | 78.2         51      |"\n'
-                'echo "| 1       0         | 0000:C2:00.0    | 5             0 / 0   |"\n',
+                'echo "| 0       910B4     | OK              | 77.1         50      0    / 0                |"\n'
+                'echo "| 0                  | 0000:C1:00.0    | 33            0    / 0      3425 / 65536      |"\n'
+                'echo "| 1       910B4     | OK              | 78.2         51      0    / 0                |"\n'
+                'echo "| 1                  | 0000:C2:00.0    | 5             0    / 0      999  / 32768      |"\n',
                 encoding="utf-8",
             )
             fake.chmod(0o755)
@@ -78,14 +81,15 @@ class TestBuildProbeScript(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             cards = [l for l in proc.stdout.splitlines() if l.startswith("CARD ")]
             self.assertEqual(len(cards), 2)
-            self.assertIn("CARD 0 910B4 33", cards)
-            self.assertIn("CARD 1 910B4 5", cards)
+            # AICore% + HBM(used/total) 都解析出来
+            self.assertIn("CARD 0 910B4 33 3425 65536", cards)
+            self.assertIn("CARD 1 910B4 5 999 32768", cards)
 
-            # 仅名行布局（无总线行）：仍能逐卡计数，利用率记 n/a
+            # 仅名行布局（无总线行）：仍能逐卡计数，利用率/显存记 n/a 0 0
             fake.write_text(
                 "#!/usr/bin/env bash\n"
-                'echo "| 0       310P3     | OK              | 10.0         40      |"\n'
-                'echo "| 1       310P3     | OK              | 20.0         41      |"\n',
+                'echo "| 0       310P3     | OK              | 10.0         40      0    / 0                |"\n'
+                'echo "| 1       310P3     | OK              | 20.0         41      0    / 0                |"\n',
                 encoding="utf-8",
             )
             proc = subprocess.run(
@@ -94,8 +98,8 @@ class TestBuildProbeScript(unittest.TestCase):
             )
             cards = [l for l in proc.stdout.splitlines() if l.startswith("CARD ")]
             self.assertEqual(len(cards), 2)
-            self.assertIn("CARD 0 310P3 n/a", cards)
-            self.assertIn("CARD 1 310P3 n/a", cards)
+            self.assertIn("CARD 0 310P3 n/a 0 0", cards)
+            self.assertIn("CARD 1 310P3 n/a 0 0", cards)
 
     def test_script_executes_and_emits_valid_json(self):
         import json

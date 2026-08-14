@@ -238,8 +238,8 @@ class TestMachineStatus(_Isolated):
             "MEM_TOTAL_KB 131072000\n"
             "MEM_AVAIL_KB 65536000\n"
             "NPU_BEGIN\n"
-            "CARD 0 910B4 12\n"
-            "CARD 1 910B4 3\n"
+            "CARD 0 910B4 12 3425 65536\n"
+            "CARD 1 910B4 3 999 32768\n"
             "NPU_END\n"
         )
         with mock.patch.object(config, "load_machines", return_value={"a": _machine(alias="a")}):
@@ -254,7 +254,9 @@ class TestMachineStatus(_Isolated):
         self.assertTrue(st.npu_smi)
         self.assertEqual(len(st.npu), 2)
         self.assertEqual(st.npu[0]["model"], "910B4")
-        self.assertEqual(st.npu[0]["aicore_pct"], "12")
+        self.assertEqual(st.npu[0]["aicore_pct"], 12)
+        self.assertEqual(st.npu[0]["hbm_used_mb"], 3425)
+        self.assertEqual(st.npu[0]["hbm_total_mb"], 65536)
 
     def test_probe_npu_smi_missing(self):
         out = "LOAD 0.1 0.2 0.3\nCPUS 4\nNPU_SMI_MISSING\n"

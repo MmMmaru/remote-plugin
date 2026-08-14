@@ -400,6 +400,14 @@ def machine_status(alias: str, probe: bool) -> MachineStatus:
     return MachineStatus(reachable=True, **parsed, **base)
 
 
+def _as_num_or_str(value: str) -> Any:
+    """数值字符串转 int，否则原样返回（如 ``n/a``）。"""
+    s = value.strip()
+    if s.isdigit():
+        return int(s)
+    return s
+
+
 def _parse_status_output(out: str) -> dict:
     """解析 status 探针的 labeled lines → {load, mem, cpu, npu, npu_smi}。"""
     res: dict[str, Any] = {}
@@ -431,7 +439,16 @@ def _parse_status_output(out: str) -> dict:
         elif in_npu and line.startswith("CARD "):
             parts = line.split()
             if len(parts) >= 4:
-                npu.append({"index": int(parts[1]), "model": parts[2], "aicore_pct": parts[3]})
+                # CARD <idx> <model> <aicore%> [<hbm_used_mb> <hbm_total_mb>]
+                card: dict[str, Any] = {
+                    "index": int(parts[1]),
+                    "model": parts[2],
+                    "aicore_pct": _as_num_or_str(parts[3]),
+                }
+                if len(parts) >= 6:
+                    card["hbm_used_mb"] = int(parts[4])
+                    card["hbm_total_mb"] = int(parts[5])
+                npu.append(card)
     return res
 
 

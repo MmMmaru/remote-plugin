@@ -14,18 +14,30 @@ from __future__ import annotations
 from typing import Any
 
 # npu-smi 解析片段（bash + awk）：输入 `npu-smi info` 输出，每卡打印一行
-# `CARD <idx> <model> <aicore%>`。兼容两种常见布局（设备名行 + 总线行 / 仅设备名行）。
+# `CARD <idx> <model> <aicore%> <hbm_used_mb> <hbm_total_mb>`。
+#
+# A2（910B3）`npu-smi info` 每卡两行：
+#   | 0  910B3 | OK           | 93.1  48  0/0 |
+#   | 0        | 0000:C1:00.0 | 0     0/0  3425/65536 |
+# 第一行 $2=NPU+Name；第二行 Bus-Id 在 $3，$4="AICore%  Mem(used/total)  HBM(used/total)"。
 NPU_PARSE_AWK = r"""npu-smi info 2>&1 | awk -F'|' '
   /^\|/ {
-    if ($2 ~ /^ *[0-9]+ +[^ ]*[A-Za-z]/) {
-      if (model != "") { printf "CARD %d %s n/a\n", idx, model }
+    if ($2 ~ /^ *[0-9]+ +[A-Za-z0-9]/) {
+      # 第一行：NPU + Name
+      if (model != "") printf "CARD %d %s n/a 0 0\n", idx, model
       n = split($2, t, " "); idx = t[1]; model = t[2]; next
     }
-    if ($2 ~ /^ *[0-9]+ +[0-9]+/) {
-      if (model != "") { u = $4; gsub(/^ +| +$/, "", u); split(u, a, " "); printf "CARD %d %s %s\n", idx, model, a[1]; model = "" }
+    if ($3 ~ /^ *[0-9a-fA-F]+:/) {
+      # 第二行：Bus-Id 在 $3；$4 = "AICore%  Mem(used/total)  HBM(used/total)"
+      if (model != "") {
+        u = $4; gsub(/^ +| +$/, "", u)
+        m = split(u, a, " ")
+        printf "CARD %d %s %s %s %s\n", idx, model, a[1], a[m-2], a[m]
+        model = ""
+      }
     }
   }
-  END { if (model != "") printf "CARD %d %s n/a\n", idx, model }
+  END { if (model != "") printf "CARD %d %s n/a 0 0\n", idx, model }
 '"""
 
 _BASE_SCRIPT = r"""#!/usr/bin/env bash
@@ -87,18 +99,28 @@ if command -v python3 >/dev/null 2>&1; then
 import sys, time, urllib.request
 url = sys.argv[1]
 t0 = time.time()
+n = 0
 try:
     with urllib.request.urlopen(url, timeout=8) as r:
-        print("ok %d %.1f" % (r.status, (time.time() - t0) * 1000))
+        while n < 131072 and time.time() - t0 < 6:  # 最多 128KB / 6s，测下载速度
+            chunk = r.read(32768)
+            if not chunk:
+                break
+            n += len(chunk)
+    dt = time.time() - t0
+    bps = int(n / dt) if dt > 0 else 0
+    print("ok %d %.1f %d" % (r.status, dt * 1000, bps))
 except Exception as e:
     print("fail %s" % type(e).__name__)
 PYEOF
 )"
   case "$PIP_RESULT" in
     ok*) put pip_index_reachable true
-         put pip_index_latency_ms "$(printf '%s' "$PIP_RESULT" | awk '{print $3}')" ;;
+         put pip_index_latency_ms "$(printf '%s' "$PIP_RESULT" | awk '{print $3}')"
+         put pip_index_speed_kbps "$(printf '%s' "$PIP_RESULT" | awk '{printf "%.0f", $4/1024}')" ;;
     *)   put pip_index_reachable false
-         put pip_index_latency_ms -1 ;;
+         put pip_index_latency_ms -1
+         put pip_index_speed_kbps 0 ;;
   esac
   DNS_HOST="$(printf '%s' "$PIP_INDEX" | sed -E 's#^[a-z]+://##; s#/.*##')"
   DNS_OK="$(python3 - "$DNS_HOST" <<'PYEOF' 2>/dev/null || true
@@ -116,6 +138,7 @@ else
   put pip_index_url "https://pypi.org/simple/"
   put pip_index_reachable false
   put pip_index_latency_ms -1
+  put pip_index_speed_kbps 0
   put dns_ok false
 fi
 
