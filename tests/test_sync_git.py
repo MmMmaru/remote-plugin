@@ -17,6 +17,7 @@ from unittest import mock
 from remote_plugin import config, output, ssh, snapshot, sync_git, sync_paths
 from remote_plugin.config import ContainerCfg, Machine
 from remote_plugin.sync_git import SyncResult
+from tests.fake_ssh import BASH, msys_path
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -47,9 +48,9 @@ class FakeSSH:
             if self.probe_rc != 0:
                 return subprocess.CompletedProcess([], self.probe_rc, b"", b"")
         if input_bytes is None:
-            proc = subprocess.run(["bash", "-s"], input=script.encode(), capture_output=True)
+            proc = subprocess.run([BASH, "-s"], input=script.encode(), capture_output=True)
         else:
-            proc = subprocess.run(["bash", "-c", script], input=input_bytes, capture_output=True)
+            proc = subprocess.run([BASH, "-c", script], input=input_bytes, capture_output=True)
         if self.sabotage and not self._sabotaged and "reset --hard" in script:
             # 模拟远端对齐后又被外部改动（HEAD 漂移）
             subprocess.run(
@@ -69,7 +70,7 @@ class FakeSSH:
         if local.returncode != 0:
             raise ssh.SSHError(f"本地命令失败: {local.stderr.decode('utf-8', 'replace')}")
         proc = subprocess.run(
-            ["bash", "-c", remote_cmd], input=local.stdout, capture_output=True
+            [BASH, "-c", remote_cmd], input=local.stdout, capture_output=True
         )
         if proc.returncode != 0:
             raise ssh.SSHError(
@@ -81,7 +82,8 @@ class FakeSSH:
 class SyncGitBase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
+        # resolve() 展开 Windows 8.3 短名（X50063~1 → x50063850），与 git 输出对齐
+        self.tmp = Path(self._tmp.name).resolve()
         self.ws = self.tmp / "ws"
         self.ws.mkdir()
         self.local_root = self.tmp / "repo"
@@ -132,22 +134,23 @@ class SyncGitBase(unittest.TestCase):
         (sub / "x.txt").write_text("x2", encoding="utf-8")
 
     def _ssh_machine(self, alias: str = "t5box") -> Machine:
+        # workspace_root 会嵌进远端脚本并由本地 bash 执行：Windows 路径须转 MSYS 形式
         return Machine(
             alias=alias, mode="ssh", host="127.0.0.1", port=22, user="root",
-            workspace_root=str(self.ws),
+            workspace_root=msys_path(self.ws),
         )
 
     def _container_machine(self, alias: str = "t5box") -> Machine:
         machine = Machine(
             alias=alias, mode="container", host="127.0.0.1", port=22, user="root",
-            container=ContainerCfg(image="img", name="c", ssh_port=22, workspace_root=str(self.ws)),
+            container=ContainerCfg(image="img", name="c", ssh_port=22, workspace_root=msys_path(self.ws)),
             workspace_root="/fallback",
         )
         ep_dir = self.local_root / ".remote" / "state" / "endpoints"
         ep_dir.mkdir(parents=True, exist_ok=True)
         (ep_dir / f"{alias}.json").write_text(
             json.dumps(
-                {"host": "127.0.0.1", "port": 22, "user": "root", "workspace_root": str(self.ws)}
+                {"host": "127.0.0.1", "port": 22, "user": "root", "workspace_root": msys_path(self.ws)}
             ),
             encoding="utf-8",
         )
@@ -180,7 +183,9 @@ class TestSyncGit(SyncGitBase):
         self.assertEqual((self.ws / "main" / "sub" / "x.txt").read_text(encoding="utf-8"), "x2")
         # 子模块 URL 改写为容器内 mirror
         cfg = (self.ws / "main" / ".git" / "config").read_text(encoding="utf-8")
-        self.assertIn(str(self.ws / ".remote-mirrors" / "sub.git"), cfg)
+        # git-for-windows 会把 URL 归一化为原生形式（C:/...），Linux 上即 str() 本身
+        want_url = str(self.ws / ".remote-mirrors" / "sub.git").replace("\\", "/")
+        self.assertIn(want_url, cfg)
         # 本地状态已记录（供快路径）
         state_file = self.local_root / ".remote" / "state" / "sync" / "t5box" / "main.json"
         self.assertTrue(state_file.is_file())
@@ -224,7 +229,7 @@ class TestSyncGit(SyncGitBase):
     def test_blocked_ssh_workspace_missing(self):
         machine = Machine(
             alias="t", mode="ssh", host="h", port=22, user="root",
-            workspace_root=str(self.tmp / "nope"),
+            workspace_root=msys_path(self.tmp / "nope"),
         )
         result = sync_git.sync_git(machine, "main", self.local_root)
         self.assertEqual(result.status, "blocked")

@@ -5,6 +5,7 @@ import subprocess
 import unittest
 
 from remote_plugin.probes import NPU_PARSE_AWK, build_probe_script
+from tests.fake_ssh import BASH, msys_path
 
 
 class TestBuildProbeScript(unittest.TestCase):
@@ -44,7 +45,7 @@ class TestBuildProbeScript(unittest.TestCase):
         for tags in ({"chip": "ascend-a2", "cards": 8}, {"chip": "nvidia-h100"}, {}):
             script = build_probe_script(tags)
             proc = subprocess.run(
-                ["bash", "-n"], input=script.encode("utf-8"), capture_output=True
+                [BASH, "-n"], input=script.encode("utf-8"), capture_output=True
             )
             self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))
 
@@ -52,6 +53,7 @@ class TestBuildProbeScript(unittest.TestCase):
         """用 fake npu-smi 验证 awk：A2 两行布局（名行+总线行）与仅名行布局都能解析。
 
         A2 `npu-smi info` 每卡两行，第二行 $3=Bus-Id、$4="AICore% Mem HBM"。
+        注意：经 stdin（bash -s）喂脚本——Windows 上 `bash -c` 的 argv 会丢单引号。
         """
         import os
         import tempfile
@@ -75,11 +77,12 @@ class TestBuildProbeScript(unittest.TestCase):
                 PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
             )
             proc = subprocess.run(
-                ["bash", "-c", NPU_PARSE_AWK], capture_output=True, text=True,
-                timeout=30, env=env,
+                [BASH, "-s"], input=NPU_PARSE_AWK.encode("utf-8"),
+                capture_output=True, timeout=30, env=env,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            cards = [l for l in proc.stdout.splitlines() if l.startswith("CARD ")]
+            cards = [l for l in proc.stdout.decode("utf-8", "replace").splitlines()
+                     if l.startswith("CARD ")]
             self.assertEqual(len(cards), 2)
             # AICore% + HBM(used/total) 都解析出来
             self.assertIn("CARD 0 910B4 33 3425 65536", cards)
@@ -93,10 +96,11 @@ class TestBuildProbeScript(unittest.TestCase):
                 encoding="utf-8",
             )
             proc = subprocess.run(
-                ["bash", "-c", NPU_PARSE_AWK], capture_output=True, text=True,
-                timeout=30, env=env,
+                [BASH, "-s"], input=NPU_PARSE_AWK.encode("utf-8"),
+                capture_output=True, timeout=30, env=env,
             )
-            cards = [l for l in proc.stdout.splitlines() if l.startswith("CARD ")]
+            cards = [l for l in proc.stdout.decode("utf-8", "replace").splitlines()
+                     if l.startswith("CARD ")]
             self.assertEqual(len(cards), 2)
             self.assertIn("CARD 0 310P3 n/a 0 0", cards)
             self.assertIn("CARD 1 310P3 n/a 0 0", cards)
@@ -109,13 +113,14 @@ class TestBuildProbeScript(unittest.TestCase):
         script = build_probe_script({"chip": "ascend-a2", "cards": 8})
         with tempfile.TemporaryDirectory() as td:
             env = dict(os.environ)
-            env["WS_ROOT"] = td
+            # 脚本由本地 bash 执行：Windows 路径须转 MSYS 形式
+            env["WS_ROOT"] = msys_path(td)
             env["EXPECTED_CARDS"] = "8"
             # 让 pip/网络探针快速失败（127.0.0.1:9 无监听），测试保持离线
             env["HTTPS_PROXY"] = "http://127.0.0.1:9"
             env["https_proxy"] = "http://127.0.0.1:9"
             proc = subprocess.run(
-                ["bash", "-s"], input=script.encode("utf-8"),
+                [BASH, "-s"], input=script.encode("utf-8"),
                 capture_output=True, timeout=90, env=env,
             )
         self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", "replace"))

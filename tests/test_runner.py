@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from remote_plugin import config, jobs, runner, ssh
+from tests.fake_ssh import BASH, msys_path
 
 
 class _Base(unittest.TestCase):
@@ -169,14 +170,15 @@ class TestLauncherLocal(unittest.TestCase):
     """用本地 bash 真实执行 launcher 脚本（无网络），验证 PID/输出/退出码/超时强杀。"""
 
     def _bash(self, script):
-        return subprocess.run(["bash", "-s"], input=script.encode("utf-8"),
+        return subprocess.run([BASH, "-s"], input=script.encode("utf-8"),
                               capture_output=True, timeout=30)
 
     def test_foreground_script_output_and_rc(self):
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / "log"
+            # 脚本交给本地 bash 执行：Windows 路径须转 MSYS 形式，否则会创建杂散目录
             script = runner._launcher("printf 'hello-from-cmd\\n'", "/tmp", {},
-                                      str(log), 600, False)
+                                      msys_path(log), 600, False)
             cp = self._bash(script)
             self.assertEqual(cp.returncode, 0)
             self.assertTrue(cp.stdout.startswith(b"__RP_PID__="))
@@ -186,7 +188,7 @@ class TestLauncherLocal(unittest.TestCase):
     def test_background_timeout_kills_process_group(self):
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / "log"
-            script = runner._launcher("sleep 30", "/tmp", {}, str(log), 2, True)
+            script = runner._launcher("sleep 30", "/tmp", {}, msys_path(log), 2, True)
             cp = self._bash(script)
             self.assertEqual(cp.returncode, 0)
             pid = int(cp.stdout.decode().strip().split("=", 1)[1])

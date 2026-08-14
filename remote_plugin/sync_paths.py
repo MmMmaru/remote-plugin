@@ -108,7 +108,8 @@ def _collect_files(root: Path, rel_paths: list[Path]) -> dict[str, int]:
         if abs_path.is_symlink():
             continue
         if abs_path.is_file():
-            result[os.fspath(rel)] = abs_path.stat().st_size
+            # 键与远端 sha256sum 输出比对：必须 POSIX 分隔符（Windows 客户端亦为 /）
+            result[rel.as_posix()] = abs_path.stat().st_size
         elif abs_path.is_dir():
             for dirpath, dirnames, filenames in os.walk(abs_path, followlinks=False):
                 # 不进入 symlink 指向的目录，避免循环/越界展开
@@ -119,7 +120,7 @@ def _collect_files(root: Path, rel_paths: list[Path]) -> dict[str, int]:
                     fp = Path(dirpath) / fn
                     if fp.is_symlink() or not fp.is_file():
                         continue
-                    result[os.fspath(fp.relative_to(root))] = fp.stat().st_size
+                    result[fp.relative_to(root).as_posix()] = fp.stat().st_size
     return result
 
 
@@ -141,7 +142,8 @@ def _parse_sha256_output(text: str) -> dict[str, str]:
     for line in text.splitlines():
         parts = line.split(None, 1)
         if len(parts) == 2 and len(parts[0]) == 64:
-            result[parts[1]] = parts[0]
+            # 二进制模式标记：GNU/Windows coreutils 输出 `<hex> *<路径>`，剥一个前导 *
+            result[parts[1].removeprefix("*")] = parts[0]
     return result
 
 
@@ -175,7 +177,7 @@ def sync_paths(
     # 1) 本地 tar 打包（保留相对结构、二进制流）→ ssh | tar -x 覆盖到 worktree
     local_cmd = [
         "tar", "-C", str(root), "-cf", "-", "--",
-        *[os.fspath(r) for r in rel_paths],
+        *[r.as_posix() for r in rel_paths],
     ]
     remote_cmd = f"mkdir -p {_shq(wt_dir)} && tar -x -C {_shq(wt_dir)}"
     ssh.ssh_pipe(endpoint, local_cmd, remote_cmd)

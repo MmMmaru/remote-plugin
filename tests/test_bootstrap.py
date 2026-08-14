@@ -94,7 +94,8 @@ class TestAskpassScript(unittest.TestCase):
         path = bootstrap._make_askpass_script(pw)
         self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
         self.assertTrue(os.path.exists(path))
-        self.assertEqual(os.stat(path).st_mode & 0o777, 0o700)
+        if os.name != "nt":  # Windows 的 os.chmod 不设置 unix 权限位
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o700)
         out = subprocess.run([sys.executable, path], capture_output=True, text=True)
         self.assertEqual(out.returncode, 0)
         self.assertEqual(out.stdout, pw)
@@ -112,7 +113,8 @@ class TestPasswordSSH(unittest.TestCase):
             captured["askpass_existed"] = os.path.exists(env["SSH_ASKPASS"])
             return cp()
 
-        with mock.patch("remote_plugin.bootstrap._run_ssh", side_effect=fake_run_ssh):
+        with mock.patch("remote_plugin.bootstrap._run_ssh", side_effect=fake_run_ssh), \
+             mock.patch("remote_plugin.bootstrap.shutil.which", return_value="/usr/bin/setsid"):
             r = bootstrap._password_ssh(make_vm(), "echo hi", "pw", input_bytes=b"x", timeout_sec=9)
         self.assertEqual(r.returncode, 0)
         env = captured["env"]

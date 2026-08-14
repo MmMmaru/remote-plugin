@@ -25,6 +25,7 @@ from remote_plugin.sync_paths import (
     _validate_worktree,
     sync_paths,
 )
+from tests.fake_ssh import BASH, TAR, local_path, msys_path
 
 
 class FakeRemote:
@@ -39,25 +40,27 @@ class FakeRemote:
         self.remove: str | None = None   # 抽检前删除远端文件 → 模拟缺文件
 
     @staticmethod
-    def _wt_from(cmd: str) -> Path:
+    def _wt_from(cmd: str) -> str:
         m = re.search(r"'([^']*)'", cmd)
         if not m:
             raise AssertionError(f"无法从命令解析 worktree 目录: {cmd!r}")
-        return Path(m.group(1))
+        # 命令内是 MSYS 形式（/c/...），可直接喂给 Git Bash 的 tar/bash；
+        # Python 侧落盘操作需经 local_path 转回本地路径
+        return m.group(1)
 
     def ssh_pipe(self, endpoint, local_cmd: list[str], remote_cmd: str) -> int:
         self.local_cmds.append(local_cmd)
         self.remote_cmds.append(remote_cmd)
         wt = self._wt_from(remote_cmd)
-        self.last_wt = wt
-        wt.mkdir(parents=True, exist_ok=True)
+        self.last_wt = local_path(wt)
+        self.last_wt.mkdir(parents=True, exist_ok=True)
         tar_proc = subprocess.run(local_cmd, capture_output=True)
         if tar_proc.returncode != 0:
             raise ssh.SSHError(
                 f"本地命令失败（{tar_proc.returncode}）: {' '.join(local_cmd)}"
             )
         extract = subprocess.run(
-            ["tar", "-x", "-C", str(wt)], input=tar_proc.stdout, capture_output=True
+            [TAR, "-x", "-C", wt], input=tar_proc.stdout, capture_output=True
         )
         if extract.returncode != 0:
             raise ssh.SSHError(f"远端 tar -x 失败（{extract.returncode}）")
@@ -65,18 +68,19 @@ class FakeRemote:
 
     def ssh_run(self, endpoint, script: str, timeout_sec: int = 300, input_bytes=None):
         self.scripts.append(script)
-        wt = self._wt_from(script)
+        wt = local_path(self._wt_from(script))
         if self.tamper is not None:
             (wt / self.tamper).write_bytes(b"TAMPERED-BYTES")
         if self.remove is not None:
             (wt / self.remove).unlink()
-        return subprocess.run(["bash", "-c", script], input=input_bytes, capture_output=True)
+        return subprocess.run([BASH, "-c", script], input=input_bytes, capture_output=True)
 
 
 class _TempBase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.tmp_root = Path(self._tmp.name)
+        # resolve() 展开 Windows 8.3 短名（X50063~1 → x50063850），与内核 resolve 对齐
+        self.tmp_root = Path(self._tmp.name).resolve()
         self.local_root = self.tmp_root / "local"
         self.local_root.mkdir()
         self.machine = config.Machine(
@@ -85,7 +89,8 @@ class _TempBase(unittest.TestCase):
             host="127.0.0.1",
             port=22,
             user="u",
-            workspace_root=str(self.tmp_root / "ws"),
+            # 会嵌进远端脚本并由本地 bash 执行：Windows 路径须转 MSYS 形式
+            workspace_root=msys_path(self.tmp_root / "ws"),
         )
         self.state = str(self.tmp_root / "state")
 
@@ -114,7 +119,7 @@ class TestResolvePaths(_TempBase):
             with self.assertRaises(SyncPathsError) as ctx:
                 _resolve_paths(self.local_root, [bad])
             self.assertIn("越界", str(ctx.exception))
-            self.assertIn(str(bad), str(ctx.exception))
+            self.assertIn(bad.as_posix(), str(ctx.exception))
 
     def test_nonexistent_raises(self):
         with self.assertRaises(SyncPathsError) as ctx:
@@ -208,8 +213,11 @@ class TestCollectFiles(_TempBase):
         )
 
     def test_symlinks_not_followed_not_counted(self):
-        (self.local_root / "link.sh").symlink_to("f.txt")
-        (self.local_root / "docs" / "dirlink").symlink_to(self.local_root / "docs" / "sub")
+        try:
+            (self.local_root / "link.sh").symlink_to("f.txt")
+            (self.local_root / "docs" / "dirlink").symlink_to(self.local_root / "docs" / "sub")
+        except OSError as e:
+            self.skipTest(f"本机无 symlink 权限（如未启用的 Windows 开发者模式）: {e}")
         got = _collect_files(self.local_root, [Path("link.sh"), Path("docs")])
         self.assertNotIn("link.sh", got)
         # dirlink 不展开 → docs/sub/a.py 仍在（经真实目录），但 dirlink/a.py 不出现
@@ -233,11 +241,11 @@ class TestTarManifest(_TempBase):
         (self.local_root / "docs" / "sub" / "a.py").write_bytes(b"x = 1\n")
 
     def _members(self, rel_args: list[str]) -> list[str]:
-        cmd = ["tar", "-C", str(self.local_root), "-cf", "-", "--", *rel_args]
+        cmd = [TAR, "-C", str(self.local_root), "-cf", "-", "--", *rel_args]
         tar_out = subprocess.run(cmd, capture_output=True)
         self.assertEqual(tar_out.returncode, 0, tar_out.stderr)
         listing = subprocess.run(
-            ["tar", "-tf", "-"], input=tar_out.stdout, capture_output=True
+            [TAR, "-tf", "-"], input=tar_out.stdout, capture_output=True
         )
         self.assertEqual(listing.returncode, 0, listing.stderr)
         return listing.stdout.decode("utf-8", "replace").splitlines()
@@ -306,8 +314,8 @@ class TestSyncPathsPipeline(_TempBase):
         )
         self.assertEqual(set(lc[6:]), {"a.sh", "crlf.txt", "docs"})
 
-        # 远端命令：先 mkdir -p worktree，再 tar -x 覆盖
-        wt = str(self.tmp_root / "ws" / "t4-test")
+        # 远端命令：先 mkdir -p worktree，再 tar -x 覆盖（命令内为 MSYS 形式路径）
+        wt = msys_path(self.tmp_root / "ws" / "t4-test")
         rc = pm.call_args.args[2]
         self.assertIn(f"mkdir -p '{wt}'", rc)
         self.assertIn(f"tar -x -C '{wt}'", rc)
@@ -318,7 +326,7 @@ class TestSyncPathsPipeline(_TempBase):
         self.assertIn("xargs -0 sha256sum --", script)
 
         # 二进制流不改行尾：远端落盘字节与本地逐字节一致（LF 与 CRLF 原样保留）
-        remote_wt = Path(wt)
+        remote_wt = self.tmp_root / "ws" / "t4-test"
         self.assertEqual((remote_wt / "a.sh").read_bytes(), self.lf_script)
         self.assertEqual((remote_wt / "crlf.txt").read_bytes(), self.crlf_text)
         self.assertEqual((remote_wt / "docs" / "sub" / "nested.py").read_bytes(), self.nested)
