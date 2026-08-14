@@ -8,7 +8,7 @@
 已写入 `<workspace>/.remote/machines.json`（数组格式）：
 
 - alias `192.168.9.166`，模式 A（VM+容器），root@192.168.9.166:22
-- 容器：`quay.io/ascend/vllm-ascend:nightly-main`，名 `xrs_vllm_main`，sshd 端口 46000
+- 容器：`quay.io/ascend/vllm-ascend:nightly-main`，名 `xrs_vllm_main`（经 `docker exec` 访问，无需 sshd）
 - workspace_root `/home/x50063850/vllm-ascend-workspace`；tags：chip=ascend-a2、cards=8、os=linux
 
 真机 e2e 的串行顺序（避免并行冲突）：**T2 up → T1 → T3 → T4 → T5 →（T2 down 需用户确认，默认不执行）**。
@@ -110,20 +110,20 @@ remote-plugin/
 
 - `updown.machine_up(machine: Machine, password: str | None) -> Endpoint`
   - ① 免密引导：密码经 stdin/env 传入（不落盘、不进日志），公钥写 VM `authorized_keys`；已免密则跳过
-  - ② 容器：docker 可用性 → 拉镜像（无则 pull）→ 创建/复用 `xrs_vllm_main`（按 `tags.chip` 挂设备）→ 容器 sshd 监听 46000 → 容器免密 → 写 `state/endpoints/<alias>.json`
+  - ② 容器：docker 可用性 → 拉镜像（无则 pull）→ 创建/复用 `xrs_vllm_main`（按 `tags.chip` 挂设备）→ 校验可 `docker exec` → 写 `state/endpoints/<alias>.json`（记录宿主机 + 容器名，**不含 sshd/端口映射**）
   - ③ 工作区初始化：`workspace_root`、`main/`、mirror 缓存目录；`core.autocrlf=false`、`core.eol=lf`
   - 幂等：健康容器复用并回 `already ready`；漂移回 `needs_repair` 不自动重建；模式 B 只做免密校验 + ③
 - `updown.machine_down(machine: Machine) -> None`：停删受管容器，不动 VM 其他资源
 - `bootstrap.push_pubkey(endpoint, pubkey: str, password: str | None) -> None`
-- `bootstrap.ensure_container(vm: Endpoint, container: ContainerCfg, tags: dict) -> None`
+- `bootstrap.ensure_container(vm: Endpoint, container: ContainerCfg, tags: dict) -> None`：pull → run → 校验 `docker exec`；健康容器复用，漂移回 `needs_repair`
 
 **E2E 验证**：
 
-1. **[本地]** 单测：up 流程的步骤编排用 fake ssh 层打桩——断言顺序为 免密→docker→sshd→工作区；已免密时跳过密码路径；漂移返回 needs_repair
+1. **[本地]** 单测：up 流程的步骤编排用 fake ssh 层打桩——断言顺序为 免密→docker→(pull/run/exec 校验)→工作区；已免密时跳过密码路径；漂移返回 needs_repair
 2. **[真机-串行，最先执行]** machines.json 已含 `password` 字段：`remote up 192.168.9.166`（免交互，密码取自配置）
-   - 预期：全链路一次完成；`state/endpoints/192.168.9.166.json` 含 `port: 46000`；密码只存在于 machines.json，不出现在 state/ 与任何日志（grep 验证）
+   - 预期：全链路一次完成；`state/endpoints/192.168.9.166.json` 含 `container: xrs_vllm_main`；密码只存在于 machines.json，不出现在 state/ 与任何日志（grep 验证）
 3. **[真机-串行]** 再次 `remote up 192.168.9.166` → `already ready` 秒回
-4. **[真机-串行]** `ssh -p 46000 -o BatchMode=yes root@192.168.9.166 "npu-smi info -l"` → 免密成功、可见 8 卡
+4. **[真机-串行]** `ssh -o BatchMode=yes admin123@192.168.9.166 "docker exec xrs_vllm_main npu-smi info -l"` → 免密成功、容器内可见 8 卡
 5. **[真机-串行]** 容器内 `/home/x50063850/vllm-ascend-workspace/{main,.remote-mirrors}` 存在；`git config --global core.autocrlf` 为 false
 6. **[真机-串行，可选，需用户确认]** `remote down 192.168.9.166` → 容器删除，VM 上其他容器不受影响；**默认不执行**
 

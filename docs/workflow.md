@@ -33,7 +33,7 @@ T0 自验：compileall + spec.md T0 的 4 条 **[本地]** 步骤。通过后提
 各任务 `{{item}}`：
 
 - **T1**：实现 spec.md T1——`machines.py` + `probes.py`（verify/machines/status、tags 探针、机器档案 Markdown）
-- **T2**：实现 spec.md T2——`updown.py` + `bootstrap.py`（免密引导→docker→容器 sshd→工作区初始化，幂等，密码不落盘）
+- **T2**：实现 spec.md T2——`updown.py` + `bootstrap.py`（免密引导→docker→pull/run/exec 进容器→工作区初始化，幂等，密码不落盘）
 - **T3**：实现 spec.md T3——`runner.py` + `jobs.py`（时间格式 job_id、卡占用、截断预览、stale reconcile、超时强杀）
 - **T4**：实现 spec.md T4——`sync_paths.py`（tar|ssh 定向传输 + sha256 抽检）
 - **T5**：实现 spec.md T5——`sync_git.py` + `snapshot.py`（synthetic snapshot、bundle、mirror materialize、fail closed；参考实现见 spec，裁剪重写不照抄）
@@ -51,7 +51,7 @@ T0 自验：compileall + spec.md T0 的 4 条 **[本地]** 步骤。通过后提
 
 对 `192.168.9.166` 按以下顺序执行 spec.md 的 **[真机-串行]** 步骤：
 
-1. **T2 up**（最先；密码取自 machines.json 的 `password` 字段，免交互）→ 免密/容器/sshd/工作区全部就绪
+1. **T2 up**（最先；密码取自 machines.json 的 `password` 字段，免交互）→ 免密/容器(docker exec)/工作区全部就绪
 2. **T1**：verify / machines / status --probe / cards 交叉校验
 3. **T3**：前台 run → 后台占坑（cards 0,1）→ machines 占用展示 → logs → stop → 超时 → stale reconcile
 4. **T4**：`--paths` 定向同步 → 远端 sha256 比对 → LF 行尾验证

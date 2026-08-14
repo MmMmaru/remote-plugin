@@ -27,7 +27,7 @@
 
 一个 entry = 一个可执行远程工作的目标。两种端点模式：
 
-**模式 A：VM + 容器（默认）**。SSH 到 VM 宿主机，由系统在 VM 上拉起受管容器，工作面在容器内。
+**模式 A：VM + 容器（默认）**。SSH 到 VM 宿主机，由系统在 VM 上拉起受管容器，工作面在容器内；后续对容器的所有操作经 `docker exec` 完成（容器本身无需 sshd/端口映射）。
 
 ```json
 {
@@ -170,9 +170,11 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 - **内核函数**：`machine_up(machine: Machine, password: str | None) -> Endpoint`、`machine_down(machine: Machine) -> None`
 - **`up` 流程（模式 A，按序执行）**：
   1. **免密引导**：初始只有账户 + 密码（来自配置 `password` 字段或 stdin/env，绝不进日志与 state）→ 将本地公钥写入 VM `authorized_keys`，之后所有 VM 操作走免密 key 登录
-  2. **容器**：确认 docker 可用 → 拉取 `container.image`（不存在时）→ 创建/复用名为 `container.name` 的容器（按 `tags.chip` 挂载对应加速卡设备）→ 配置容器内 sshd 监听 `container.ssh_port` → 容器内同样写入公钥实现免密 → 写入本地 endpoint 状态，后续所有操作直连容器
-  3. **工作区初始化**（原 `init`，并入本步）：容器内创建 `workspace_root`、`main/` 目录与 git mirror 缓存目录；设置 `core.autocrlf=false`、`core.eol=lf` 等同步前置配置
+  2. **容器**：确认 docker 可用 → 拉取 `container.image`（不存在时）→ 创建/复用名为 `container.name` 的容器（按 `tags.chip` 挂载对应加速卡设备）→ 校验容器可 `docker exec` → 写入本地 endpoint 状态（记录宿主机 + 容器名），后续所有操作 = **SSH 到宿主机 + `docker exec` 进容器**（容器无需 sshd、无需端口映射）
+  3. **工作区初始化**（原 `init`，并入本步）：经 `docker exec` 在容器内创建 `workspace_root`、`main/` 目录与 git mirror 缓存目录；设置 `core.autocrlf=false`、`core.eol=lf` 等同步前置配置
 - **模式 B 的 `up`**：只做免密配置校验 + 上述第 3 步工作区初始化
+
+> 说明：模式 A 的容器访问**统一经 `docker exec`**（SSH 到宿主机后执行 `docker exec -i <container> <cmd>`），不要求在容器内跑 sshd、不做端口映射；`container.ssh_port` 字段保留但不再使用（向后兼容）。
 - `down`：停止并移除受管容器，不动 VM 上其他资源
 - 镜像、容器名等全部来自 JSON 配置，**系统不做镜像策略推断**（无 rc/main/stable 选择器）
 - 幂等：已存在且健康的容器直接复用；漂移时返回 `needs_repair` 而非自动重建
