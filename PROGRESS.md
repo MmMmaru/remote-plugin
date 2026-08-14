@@ -6,13 +6,13 @@
 
 - [x] git init
 - [x] .gitignore / AGENTS.md / PROGRESS.md
-- [ ] 首次提交 `chore: init remote-plugin with PRD and spec`
+- [x] 首次提交 `chore: init remote-plugin with PRD and spec`
 
 ## 阶段 1：T0 骨架
 
-- [ ] config.py / ssh.py / output.py / cli.py + 入口脚本 + tests
-- [ ] T0 自验（compileall + 4 条 [本地]）
-- [ ] 提交 `feat: T0 skeleton`
+- [x] config.py / ssh.py / output.py / cli.py + 入口脚本 + tests
+- [x] T0 自验（compileall + 4 条 [本地]）
+- [x] 提交 `feat: T0 skeleton`
 
 ## 阶段 2：子代理并行
 
