@@ -6,4 +6,5 @@ __pycache__/
 *.pyc
 
 # 机器注册可能含密码等敏感字段，一律不入 git
-.remote/
+.remote/private/
+.remote/state/
