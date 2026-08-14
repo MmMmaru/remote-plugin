@@ -105,6 +105,41 @@ class TestBuildProbeScript(unittest.TestCase):
             self.assertIn("CARD 0 310P3 n/a 0 0", cards)
             self.assertIn("CARD 1 310P3 n/a 0 0", cards)
 
+            # 紧凑布局（used/total 间无空格，A2 实测布局之一）：0/0 与 3425/65536
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                'echo "| 0       910B3     | OK              | 93.1         48      0/0                  |"\n'
+                'echo "| 0                  | 0000:C1:00.0    | 7             0/0          3425/65536     |"\n'
+                'echo "| 1       910B3     | OK              | 94.2         49      0/0                  |"\n'
+                'echo "| 1                  | 0000:C2:00.0    | 0             0/0          0/65536         |"\n',
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [BASH, "-s"], input=NPU_PARSE_AWK.encode("utf-8"),
+                capture_output=True, timeout=30, env=env,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            cards = [l for l in proc.stdout.decode("utf-8", "replace").splitlines()
+                     if l.startswith("CARD ")]
+            self.assertIn("CARD 0 910B3 7 3425 65536", cards)
+            self.assertIn("CARD 1 910B3 0 0 65536", cards)
+
+            # 无 AICore% 列布局（部分驱动版本第二行只有 Mem/HBM）：AICore 记 n/a
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                'echo "| 0       910B3     | OK              | 93.1         48      0/0                  |"\n'
+                'echo "| 0                  | 0000:C1:00.0    | 0/0          3425/65536                  |"\n',
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [BASH, "-s"], input=NPU_PARSE_AWK.encode("utf-8"),
+                capture_output=True, timeout=30, env=env,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            cards = [l for l in proc.stdout.decode("utf-8", "replace").splitlines()
+                     if l.startswith("CARD ")]
+            self.assertIn("CARD 0 910B3 n/a 3425 65536", cards)
+
     def test_script_executes_and_emits_valid_json(self):
         import json
         import os
@@ -138,6 +173,70 @@ class TestBuildProbeScript(unittest.TestCase):
         self.assertIs(data["workspace_exists"], True)
         self.assertIs(data["workspace_writable"], True)
         self.assertIs(data["pip_index_reachable"], False)
+        # 不可达时测速输出 null + 原因字段，而不是 0（0 会被误读为"真的极慢"）
+        self.assertIsNone(data["pip_index_speed_kbps"])
+        self.assertIsInstance(data["pip_index_speed_note"], str)
+        self.assertTrue(data["pip_index_speed_note"])
+
+    def test_pip_speed_snippet_measures_and_marks_unmeasurable(self):
+        """抽出探针脚本内嵌的测速 python 片段，对本地 HTTP server 验证：
+
+        - 正常响应 → `ok <status> <latency> <bps>=0`（实测速度）；
+        - 空响应体（无有效负载）→ bps = -1（无法测量，bash 侧转 null+note）。
+        """
+        import http.server
+        import re
+        import threading
+
+        script = build_probe_script({})
+        m = re.search(r"<<'PYEOF'[^\n]*\n(.*?)\nPYEOF", script, re.S)
+        self.assertIsNotNone(m)
+        snippet = m.group(1)
+
+        payload = b"x" * 65536
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            empty = False
+
+            def do_GET(self):
+                self.send_response(200)
+                body = b"" if self.empty else payload
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        url = f"http://127.0.0.1:{server.server_port}/simple/"
+
+        import sys as _sys
+
+        def run_snippet(u: str) -> str:
+            # 片段含 UTF-8 中文注释：必须按字节喂，避免 text=True 走本地代码页
+            r = subprocess.run([_sys.executable, "-", u], input=snippet.encode("utf-8"),
+                               capture_output=True, timeout=30)
+            return r.stdout.decode("utf-8", "replace")
+
+        r = run_snippet(url)
+        parts = r.split()
+        self.assertEqual(parts[0], "ok")
+        self.assertEqual(parts[1], "200")
+        self.assertGreaterEqual(int(parts[3]), 0)  # 实测速度 bps
+
+        Handler.empty = True
+        r = run_snippet(url)
+        parts = r.split()
+        self.assertEqual(parts[0], "ok")
+        self.assertEqual(int(parts[3]), -1)  # 无有效负载 → 无法测量
+
+        # 连接被拒绝 → fail <异常名>（bash 侧转 unreachable + null）
+        server.shutdown()
+        r = run_snippet(url)
+        self.assertTrue(r.startswith("fail "), r)
 
 
 if __name__ == "__main__":

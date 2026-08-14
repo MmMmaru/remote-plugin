@@ -19,7 +19,10 @@ from typing import Any
 # A2（910B3）`npu-smi info` 每卡两行：
 #   | 0  910B3 | OK           | 93.1  48  0/0 |
 #   | 0        | 0000:C1:00.0 | 0     0/0  3425/65536 |
-# 第一行 $2=NPU+Name；第二行 Bus-Id 在 $3，$4="AICore%  Mem(used/total)  HBM(used/total)"。
+# 第一行 $2=NPU+Name；第二行 Bus-Id 在 $3，$4 为 "[AICore%] Mem(used/total) HBM(used/total)"。
+# 不同驱动版本布局差异：used/total 间的 `/` 可能无空格（0/0 或 0 / 0），
+# 部分版本第二行没有 AICore% 列——统一先把 `/` 撑开再按列数判定（7 段含
+# AICore%，6 段无 AICore% 记 n/a），解析不出时 best-effort 记 n/a 0 0。
 NPU_PARSE_AWK = r"""npu-smi info 2>&1 | awk -F'|' '
   /^\|/ {
     if ($2 ~ /^ *[0-9]+ +[A-Za-z0-9]/) {
@@ -28,11 +31,21 @@ NPU_PARSE_AWK = r"""npu-smi info 2>&1 | awk -F'|' '
       n = split($2, t, " "); idx = t[1]; model = t[2]; next
     }
     if ($3 ~ /^ *[0-9a-fA-F]+:/) {
-      # 第二行：Bus-Id 在 $3；$4 = "AICore%  Mem(used/total)  HBM(used/total)"
+      # 第二行：Bus-Id 在 $3；$4 = "[AICore%]  Mem(used/total)  HBM(used/total)"
       if (model != "") {
-        u = $4; gsub(/^ +| +$/, "", u)
+        u = $4
+        gsub(/\//, " / ", u)          # 0/0 与 0 / 0 统一
+        gsub(/^ +| +$/, "", u)
         m = split(u, a, " ")
-        printf "CARD %d %s %s %s %s\n", idx, model, a[1], a[m-2], a[m]
+        aicore = "n/a"; hbm_u = 0; hbm_t = 0
+        if (m >= 7 && a[m-1] == "/") {
+          # 7 段：AICore% Mem used / total HBM used / total
+          aicore = a[1]; hbm_u = a[m-2]; hbm_t = a[m]
+        } else if (m == 6 && a[5] == "/") {
+          # 6 段（无 AICore% 列）：Mem used / total HBM used / total
+          hbm_u = a[4]; hbm_t = a[6]
+        }
+        printf "CARD %d %s %s %s %s\n", idx, model, aicore, hbm_u, hbm_t
         model = ""
       }
     }
@@ -102,19 +115,22 @@ t0 = time.time()
 try:
     r = urllib.request.urlopen(url, timeout=8)
     latency_ms = (time.time() - t0) * 1000
-    # 下载测速（best-effort：失败记 0，不影响可达性判断）
+    # 下载测速（best-effort，不影响可达性判断；测不出来记 -1 = 无法测量）
     n = 0
+    speed_bps = -1
     try:
-        while n < 131072 and time.time() - t0 < 6:  # 最多 128KB / 6s
+        t1 = time.time()
+        while n < 131072 and time.time() - t1 < 6:  # 最多 128KB / 6s
             chunk = r.read(32768)
             if not chunk:
                 break
             n += len(chunk)
-        dt = time.time() - t0
-        bps = int(n / dt) if dt > 0 else 0
+        if n > 0:
+            dt = time.time() - t1
+            speed_bps = int(n / dt) if dt > 0 else -1
     except Exception:
-        bps = 0
-    print("ok %d %.1f %d" % (r.status, latency_ms, bps))
+        speed_bps = -1
+    print("ok %d %.1f %d" % (r.status, latency_ms, speed_bps))
 except Exception as e:
     print("fail %s" % type(e).__name__)
 PYEOF
@@ -122,10 +138,18 @@ PYEOF
   case "$PIP_RESULT" in
     ok*) put pip_index_reachable true
          put pip_index_latency_ms "$(printf '%s' "$PIP_RESULT" | awk '{print $3}')"
-         put pip_index_speed_kbps "$(printf '%s' "$PIP_RESULT" | awk '{printf "%.0f", $4/1024}')" ;;
+         PIP_BPS="$(printf '%s' "$PIP_RESULT" | awk '{print $4}')"
+         if [ "$PIP_BPS" -ge 0 ] 2>/dev/null; then
+           put pip_index_speed_kbps "$(printf '%s' "$PIP_BPS" | awk '{printf "%.0f", $1/1024}')"
+         else
+           # 测速失败/无有效负载：输出 null + 原因，而不是 0（0 会被误读为"真的极慢"）
+           put pip_index_speed_kbps null
+           put pip_index_speed_note "$(json_str "下载测速失败或无有效负载，无法测量")"
+         fi ;;
     *)   put pip_index_reachable false
          put pip_index_latency_ms -1
-         put pip_index_speed_kbps 0 ;;
+         put pip_index_speed_kbps null
+         put pip_index_speed_note "$(json_str "index 不可达，未测速")" ;;
   esac
   DNS_HOST="$(printf '%s' "$PIP_INDEX" | sed -E 's#^[a-z]+://##; s#/.*##')"
   DNS_OK="$(python3 - "$DNS_HOST" <<'PYEOF' 2>/dev/null || true
@@ -143,7 +167,8 @@ else
   put pip_index_url "https://pypi.org/simple/"
   put pip_index_reachable false
   put pip_index_latency_ms -1
-  put pip_index_speed_kbps 0
+  put pip_index_speed_kbps null
+  put pip_index_speed_note "$(json_str "python3 不可用，未测速")"
   put dns_ok false
 fi
 
