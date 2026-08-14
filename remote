@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+"""remote CLI 入口：保证 `remote` 可从任意 cwd 调用。"""
+import os
+import sys
+
+_here = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, _here)
+
+from remote_plugin.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())
