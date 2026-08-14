@@ -16,7 +16,7 @@
 - **唯一形态是 CLI**：`remote <子命令>`。人类在终端直接用；agent 通过自身 harness 的 bash/shell 工具调用同一条 CLI。**不做 MCP server**，任何能跑 shell 的 harness（Codex、Claude Code、deepseek-harness 等）零配置接入
 - **纯标准库 + 系统 ssh**：零第三方依赖，不引入 paramiko；文件与代码传输走 ssh 管道，不用 scp/sftp/rsync/sshpass/expect
 - **默认在容器内开发**：整个 workspace 位于容器内，默认路径 `/vllm-workspace`；VM 宿主机仅为容器维护面，不持有代码副本
-- **内核目标 ≤1500 行 Python**（不含测试）；单文件 ≤600 行
+- **单文件 ≤600 行**（内核模块统一约束）
 - 输出契约：进度走 stderr，最终结果 stdout 单行 JSON，方便 agent 解析
 
 ## 2. 数据模型
@@ -288,4 +288,4 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 4. **多 agent 占用可见**：agent A 在某机起后台 job 后，agent B 的 `remote machines` broadcast 能看到该 job 的 owner/task/卡占用并据此避让；失联 job 正确标记 `stale`
 5. **同步两方法**：方法 A 含 submodule 递归与 dirty 树；方法 B 单文件热修
 6. **agent 接入**：在至少一种 harness（Codex 或 Claude Code）中，agent 仅凭 skill 指引即可正确使用 `remote machines` / `remote run` / `remote sync` 完成一次远程任务
-7. 内核 ≤1500 行，纯标准库，`python3 -m compileall` 与 unittest 全绿
+7. 纯标准库，`python3 -m compileall` 与 unittest 全绿

@@ -50,6 +50,8 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 | `remote machines` | 所有机器一览：tags、占用（owner/task/卡）、最近 verify 结论 |
 | `remote status <alias> [--probe]` | 单机详情；`--probe` 实时查负载与 NPU 利用率 |
 | `remote verify <alias>` | 环境探测，刷新 `state/docs/<alias>.md` 机器档案 |
+| `remote up <alias> [--password-env NAME | --password-stdin]` | 从 0 拉起/复用容器 + 免密引导 + 工作区初始化（幂等） |
+| `remote down <alias>` | 停止并移除受管容器（默认不执行，需先问人类） |
 | `remote sync <alias> [--worktree <id>]` | 方法 A：整树 git 同步（字节级一致，不改行尾） |
 | `remote sync <alias> --paths <file>... [--worktree <id>]` | 方法 B：指定路径定向覆盖（热修补） |
 | `remote run <alias> --cmd "..." [--worktree <id>] [--cwd <path>] [--env K=V] [--cards 0,1] [--task "..."] [--timeout 600] [--background]` | 远程执行命令 |
@@ -59,6 +61,29 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 
 > `remote` 可执行脚本位于仓库根目录：在仓库根目录内用 `./remote <cmd>`，
 > 或把仓库根目录加入 PATH 后直接用 `remote <cmd>`。
+
+## 从 0 拉起机器（bootstrap）
+
+机器三种起始状态都收敛到同一条命令 `remote up <alias>`（幂等，可重复执行）：
+
+1. **无镜像**：`remote up` 会 `docker pull` 拉取 `container.image`。
+2. **有镜像、无容器**：`remote up` 会 `docker run` 创建名为 `container.name` 的容器（按 `tags.chip` 挂载加速卡设备）。
+3. **有镜像、有容器**：`remote up` 复用现有容器，做 `docker exec` 可执行校验 + 工作区初始化，并回 `already ready`；容器未运行/不可 exec 才报 `needs_repair`（不自动重建）。
+
+`up` 同时完成：免密引导（把本地公钥写入宿主机 `authorized_keys`）、
+工作区初始化（`workspace_root/main`、`.remote-mirrors`、`core.autocrlf=false`、`core.eol=lf`）。
+
+## 机器未注册时
+
+`remote` 的所有命令都依赖 `.remote/machines.json`（项目级，从 cwd 向上查找）。
+目标机器不在其中时，**不要凭空猜配置，经对话问人类补齐后写进 `.remote/machines.json`**：
+
+1. 问人类要：`alias`、`mode`（container/ssh）、`host`、`port`、`user`、密码（仅首次 `up` 用）、
+   `container.image/name/workspace_root`、`tags`（chip/cards/os）。
+2. 把该机条目追加进 `.remote/machines.json`（机器对象数组）。密码字段用完 `up` 后建议让人类删除。
+3. `remote up <alias>` 拉起/复用，再继续正常流程。
+
+> 系统不提供交互式 `remote add` 命令；注册 = 写 `.remote/machines.json`（含密码的该文件禁止入 git）。
 
 ## 标准流程
 
