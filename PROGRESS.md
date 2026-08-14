@@ -31,4 +31,4 @@
 
 ## 遗留项
 
-（待记录）
+- **真机 SSH KEX 挂起**：`192.168.9.166` 默认 KEX `sntrup761x25519` 握手会挂起（疑似大包触发 PMTUD 黑洞）；`-o KexAlgorithms=curve25519-sha256` 即正常。阶段 3 需在 `ssh.py::_ssh_base` 增加该 KEX 优先项并记录。
