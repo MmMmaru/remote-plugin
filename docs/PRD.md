@@ -131,7 +131,7 @@
 verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和 agent 直接阅读：
 
 - OS / 内核 / CPU / 内存 / 磁盘余量
-- 按 tags 的可选探针结果（如 `chip: ascend-*`：npu-smi 型号与卡数、torch/torch_npu 版本）
+- 按 tags 的可选探针结果（如 `chip: ascend-*`：npu-smi 型号与卡数、每卡 HBM/AICore 占用、torch/torch_npu 版本）
 - 网络事实：pip index 可达性与实测延迟、apt mirror、http_proxy 等代理 env、DNS
 - SSH 实际用户、workspace_root 可写性
 
@@ -158,8 +158,8 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 
 ### 3.3 查询
 
-- **broadcast**：`remote machines` → 所有机器一览：alias、模式、tags、占用状态（空闲 / running jobs 的 owner、task、卡占用 / stale）、最近 verify 结论
-- **点对点**：`remote status <alias>` → 单机详情 + 可选 `--probe` 实时 SSH 查负载与 NPU 利用率
+- **broadcast**：`remote machines` → 所有机器一览：alias、模式、tags、占用状态（空闲 / running jobs 的 owner、task、卡占用 / stale）、每卡实测利用率（`npu_cards`：HBM 用量/总量 + AICore%，来自最近一次 verify）、最近 verify 结论
+- **点对点**：`remote status <alias>` → 单机详情 + 可选 `--probe` 实时 SSH 查负载与每卡 NPU 利用率/显存
 - **内核函数**：`list_machines() -> list[MachineView]`、`machine_status(alias: str, probe: bool) -> MachineStatus`
 - 这是 agent "一条命令看机器占用" 的入口
 

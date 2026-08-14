@@ -195,10 +195,20 @@ if command -v npu-smi >/dev/null 2>&1; then
   NPU_MODEL="$(printf '%s\n' "$NPU_CARD_LINES" | sed -n 's/^CARD [0-9]* \([^ ]*\).*/\1/p' | head -n1)"
   put npu_count "$NPU_COUNT"
   put npu_model "$(json_str "$NPU_MODEL")"
+  # 每卡占用（index/model/AICore%/HBM used/total）→ JSON 数组，供 machines 卡级展示
+  NPU_CARDS_JSON="$(printf '%s\n' "$NPU_CARD_LINES" | awk '
+    BEGIN { printf "["; c = 0 }
+    /^CARD / {
+      aicore = ($4 ~ /^[0-9]+(\.[0-9]+)?$/) ? $4 : "null"
+      printf "%s{\"index\":%d,\"model\":\"%s\",\"aicore_pct\":%s,\"hbm_used_mb\":%d,\"hbm_total_mb\":%d}", (c++ ? "," : ""), $2, $3, aicore, $5 + 0, $6 + 0
+    }
+    END { printf "]\n" }')"
+  put npu_cards "$NPU_CARDS_JSON"
 else
   put npu_smi_ok false
   put npu_count 0
   put npu_model '""'
+  put npu_cards '[]'
 fi
 if [ -n "$EXPECTED_CARDS" ]; then
   if [ "$NPU_COUNT" = "$EXPECTED_CARDS" ]; then

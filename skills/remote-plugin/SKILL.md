@@ -49,8 +49,8 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 
 | 命令 | 用途 |
 |---|---|
-| `remote machines` | 所有机器一览：tags、占用（owner/task/卡）、最近 verify 结论 |
-| `remote status <alias> [--probe]` | 单机详情；`--probe` 实时查负载与 NPU 利用率 |
+| `remote machines` | 所有机器一览：tags、占用（owner/task/卡）、每卡 HBM/AICore 实测（`npu_cards`，来自最近 verify）、最近 verify 结论 |
+| `remote status <alias> [--probe]` | 单机详情；`--probe` 实时查负载与每卡 NPU 利用率/显存 |
 | `remote verify <alias>` | 环境探测，刷新 `state/docs/<alias>.md` 机器档案 |
 | `remote up <alias> [--password-env NAME | --password-stdin]` | 从 0 拉起/复用容器 + 免密引导 + 工作区初始化（幂等） |
 | `remote down <alias>` | 停止并移除受管容器（默认不执行，需先问人类） |

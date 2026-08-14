@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import unittest
+from pathlib import Path
 
 from remote_plugin.probes import NPU_PARSE_AWK, build_probe_script
 from tests.fake_ssh import BASH, msys_path
@@ -151,6 +152,20 @@ class TestBuildProbeScript(unittest.TestCase):
             # 脚本由本地 bash 执行：Windows 路径须转 MSYS 形式
             env["WS_ROOT"] = msys_path(td)
             env["EXPECTED_CARDS"] = "8"
+            # fake npu-smi：验证 npu_cards 逐卡 JSON 数组组装
+            bin_dir = Path(td) / "bin"
+            bin_dir.mkdir()
+            fake = bin_dir / "npu-smi"
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                'echo "| 0       910B3     | OK              | 93.1         48      0/0                  |"\n'
+                'echo "| 0                  | 0000:C1:00.0    | 7             0/0          3425/65536     |"\n'
+                'echo "| 1       910B3     | OK              | 94.2         49      0/0                  |"\n'
+                'echo "| 1                  | 0000:C2:00.0    | 3             0/0          999/65536      |"\n',
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
             # 让 pip/网络探针快速失败（127.0.0.1:9 无监听），测试保持离线
             env["HTTPS_PROXY"] = "http://127.0.0.1:9"
             env["https_proxy"] = "http://127.0.0.1:9"
@@ -177,6 +192,14 @@ class TestBuildProbeScript(unittest.TestCase):
         self.assertIsNone(data["pip_index_speed_kbps"])
         self.assertIsInstance(data["pip_index_speed_note"], str)
         self.assertTrue(data["pip_index_speed_note"])
+        # 每卡占用 JSON 数组：index/model/aicore_pct/hbm_used_mb/hbm_total_mb
+        self.assertEqual(data["npu_count"], 2)
+        self.assertEqual(data["cards_match"], False)  # 实测 2 ≠ 配置 8
+        cards = data["npu_cards"]
+        self.assertEqual(len(cards), 2)
+        self.assertEqual(cards[0], {"index": 0, "model": "910B3", "aicore_pct": 7,
+                                    "hbm_used_mb": 3425, "hbm_total_mb": 65536})
+        self.assertEqual(cards[1]["hbm_used_mb"], 999)
 
     def test_pip_speed_snippet_measures_and_marks_unmeasurable(self):
         """抽出探针脚本内嵌的测速 python 片段，对本地 HTTP server 验证：

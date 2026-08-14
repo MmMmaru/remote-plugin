@@ -44,6 +44,12 @@ def _ok_facts(**over):
         "npu_smi_ok": True,
         "npu_count": 8,
         "npu_model": "910B4",
+        "npu_cards": [
+            {"index": 0, "model": "910B4", "aicore_pct": 12,
+             "hbm_used_mb": 3425, "hbm_total_mb": 65536},
+            {"index": 1, "model": "910B4", "aicore_pct": None,
+             "hbm_used_mb": 0, "hbm_total_mb": 65536},
+        ],
         "cards_match": True,
         "torch_version": "2.1.0",
         "torch_npu_version": "2.1.0.post5",
@@ -87,6 +93,14 @@ class TestVerifyMachine(_Isolated):
         self.assertIn("- verify_status: ok", text)
         self.assertIn("910B4", text)
         self.assertIn("pip index", text)
+        # 每卡占用写入档案文档 + 结构化 sidecar
+        self.assertIn("每卡占用", text)
+        self.assertIn("3425 / 65536", text)
+        sidecar = result.doc.parent / f"{result.doc.stem}.facts.json"
+        self.assertTrue(sidecar.is_file())
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        self.assertEqual(payload["verify_status"], "ok")
+        self.assertEqual(payload["npu_cards"][0]["hbm_used_mb"], 3425)
         # 脚本注入了 WS_ROOT / EXPECTED_CARDS
         script = run.call_args[0][1]
         self.assertIn("export WS_ROOT=/ws", script)
@@ -302,6 +316,34 @@ class TestHandlers(_Isolated):
         self.assertEqual(result["machines"][0]["alias"], "a")
         self.assertIn("busy", result["machines"][0])
         self.assertIn("jobs", result["machines"][0])
+        self.assertIn("npu_cards", result["machines"][0])
+
+    def test_cli_machines_includes_per_card_utilization_from_verify(self):
+        """verify 后 machines 输出每卡 HBM/AICore 实测占用（sidecar 驱动）。"""
+        with mock.patch.object(config, "load_machines", return_value={"a": _machine(alias="a")}):
+            with mock.patch.object(ssh, "ssh_run", return_value=_proc(0, json.dumps(_ok_facts()))):
+                machines.cli_verify(self._args(alias="a"))
+            result = machines.cli_machines(self._args())
+        cards = result["machines"][0]["npu_cards"]
+        self.assertEqual(len(cards), 2)
+        self.assertEqual(cards[0]["index"], 0)
+        self.assertEqual(cards[0]["aicore_pct"], 12)
+        self.assertEqual(cards[0]["hbm_used_mb"], 3425)
+        self.assertEqual(cards[0]["hbm_total_mb"], 65536)
+        self.assertIsNone(cards[1]["aicore_pct"])  # 解析不出时记 null
+
+    def test_verify_status_md_fallback_without_sidecar(self):
+        """旧档案（仅 md，无 sidecar）仍能读出 status/verified_at，npu_cards 为 None。"""
+        doc = self.state / "docs" / "a.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(
+            "# 机器档案: a\n- verify_status: degraded\n- verified_at: 2026-01-01T00:00:00Z\n",
+            encoding="utf-8",
+        )
+        status, verified, cards = machines._read_verify_summary(self.state, "a")
+        self.assertEqual(status, "degraded")
+        self.assertEqual(verified, "2026-01-01T00:00:00Z")
+        self.assertIsNone(cards)
 
     def test_cli_status_shape(self):
         with mock.patch.object(config, "load_machines", return_value={"a": _machine(alias="a")}):

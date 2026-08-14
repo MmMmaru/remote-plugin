@@ -55,6 +55,7 @@ class MachineView:
     verify_status: str | None
     verified_at: str | None
     jobs: list
+    npu_cards: list | None = None  # 每卡实测占用（HBM/AICore），来自最近一次 verify
 
     @property
     def busy(self) -> bool:
@@ -242,6 +243,17 @@ def _write_doc(
             A(f"- torch: {_md(str(facts.get('torch_version')))}")
         if facts.get("torch_npu_version"):
             A(f"- torch_npu: {_md(str(facts.get('torch_npu_version')))}")
+        cards = facts.get("npu_cards")
+        if isinstance(cards, list) and cards:
+            A("- 每卡占用（verify 时刻实测）:")
+            A("")
+            A("  | 卡 | 型号 | AICore% | HBM 已用/总量 (MB) |")
+            A("  | --- | --- | --- | --- |")
+            for c in cards:
+                aicore = c.get("aicore_pct")
+                aicore_s = "n/a" if aicore is None else str(aicore)
+                A(f"  | {c.get('index')} | {_md(str(c.get('model', '')))} | "
+                  f"{aicore_s} | {c.get('hbm_used_mb', 0)} / {c.get('hbm_total_mb', 0)} |")
         A("")
     if facts.get("pip_index_url") is not None:
         A("## 网络")
@@ -261,6 +273,13 @@ def _write_doc(
     A("")
     doc.parent.mkdir(parents=True, exist_ok=True)
     doc.write_text("\n".join(L), encoding="utf-8")
+    # sidecar：结构化 facts（含 verify_status），供 machines 卡级展示等程序化读取
+    payload = dict(facts)
+    payload["verify_status"] = status
+    sidecar = doc.parent / f"{doc.stem}.facts.json"
+    sidecar.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def _md(s: str) -> str:
@@ -268,21 +287,41 @@ def _md(s: str) -> str:
     return s.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
-def _read_verify_summary(st: Path, alias: str) -> tuple[str | None, str | None]:
-    """从 `state/docs/<alias>.md` 读最近 verify 结论（status / timestamp）。"""
+def _read_verify_summary(
+    st: Path, alias: str
+) -> tuple[str | None, str | None, list | None]:
+    """读最近 verify 结论（status / verified_at / 每卡占用 npu_cards）。
+
+    优先读结构化 sidecar `state/docs/<alias>.facts.json`；旧档案无 sidecar 时
+    回退解析 Markdown（此时 npu_cards 为 None）。
+    """
     doc = st / "docs" / f"{alias}.md"
-    if not doc.is_file():
-        return None, None
+    sidecar = st / "docs" / f"{alias}.facts.json"
     status = verified = None
-    try:
-        for line in doc.read_text(encoding="utf-8").splitlines():
-            if line.startswith("- verify_status: "):
-                status = line[len("- verify_status: "):].strip()
-            elif line.startswith("- verified_at: "):
-                verified = line[len("- verified_at: "):].strip()
-    except OSError:
-        pass
-    return (status or None), (verified or None)
+    npu_cards: list | None = None
+    if sidecar.is_file():
+        try:
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict):
+            if data.get("verify_status"):
+                status = str(data["verify_status"])
+            if data.get("verified_at"):
+                verified = str(data["verified_at"])
+            cards = data.get("npu_cards")
+            if isinstance(cards, list):
+                npu_cards = cards
+    if status is None and doc.is_file():
+        try:
+            for line in doc.read_text(encoding="utf-8").splitlines():
+                if line.startswith("- verify_status: "):
+                    status = line[len("- verify_status: "):].strip()
+                elif line.startswith("- verified_at: "):
+                    verified = line[len("- verified_at: "):].strip()
+        except OSError:
+            pass
+    return (status or None), (verified or None), npu_cards
 
 
 # ---------------------------------------------------------------- machines 一览
@@ -296,7 +335,7 @@ def list_machines() -> list[MachineView]:
     views = []
     for alias in sorted(machines):
         m = machines[alias]
-        vstatus, vat = _read_verify_summary(st, alias)
+        vstatus, vat, vcards = _read_verify_summary(st, alias)
         views.append(
             MachineView(
                 alias=alias,
@@ -305,6 +344,7 @@ def list_machines() -> list[MachineView]:
                 verify_status=vstatus,
                 verified_at=vat,
                 jobs=jobs_by_machine.get(alias, []),
+                npu_cards=vcards,
             )
         )
     return views
@@ -369,7 +409,7 @@ def machine_status(alias: str, probe: bool) -> MachineStatus:
     if m is None:
         raise RemotePluginError(f"机器 '{alias}' 未注册（machines.json 中不存在）")
     st = config.state_dir()
-    vstatus, vat = _read_verify_summary(st, alias)
+    vstatus, vat, _ = _read_verify_summary(st, alias)
     base = dict(
         alias=alias,
         mode=m.mode,
@@ -484,6 +524,7 @@ def cli_machines(args) -> dict:
                 "verified_at": v.verified_at,
                 "busy": v.busy,
                 "jobs": v.jobs,
+                "npu_cards": v.npu_cards,
             }
             for v in views
         ],
