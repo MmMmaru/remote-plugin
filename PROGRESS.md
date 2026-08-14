@@ -28,8 +28,14 @@
 ## 阶段 3：最终验收
 
 - [x] 3.1 静态门：`compileall` + 158 条 unittest 全绿；无越权改 T0；10 子命令 `--help`；错误单行 JSON 无堆栈
-- [~] 3.2 真机 e2e：**T2 up 已通全链路**（免密引导 → docker → 复用容器 → docker exec → 工作区初始化）；T1/T3/T4/T5 被网络 MTU 黑洞阻断（见遗留项）
-- [ ] 3.3 收尾：按任务已分 commit；汇总报告见会话
+- [x] 3.2 真机 e2e（T2 up → T1 → T3 → T4 → T5 全绿，MTU 已由客户端降 MTU 解决）
+  - T2 `up`：免密引导 → docker → 复用容器 → docker exec → 工作区初始化，`status: ok`
+  - T1 `verify`：`ok`，实测 8 卡 910B3、cards_match=true、torch_npu 2.10.0.post2；`machines`/`status --probe` 正常
+  - T3 `run`：前台 exit 0；后台占坑（cards 0,1）在 `machines` 可见；`jobs/logs/stop` 正常；`--timeout 5` → timeout；杀进程 → stale
+  - T4 `sync --paths`：`ready`，7 文件 50684 字节，sha256 与远端逐文件一致
+  - T5 `sync` git 整树：`ready`（snapshot=remote_head）；二次 `no_change`；远端 t5-test HEAD 一致
+  - 冒烟：容器内 `import torch_npu` exit 0
+- [x] 3.3 收尾：按任务分 commit；本文档更新
 
 ## 里程碑：容器模型修正（sshd → docker exec）
 
@@ -42,7 +48,9 @@
 
 ## 遗留项
 
-1. **网络 PMTUD 黑洞（阻塞真机 e2e T1/T3/T4/T5）**：到 `192.168.9.166` 的路径有效 MTU 约 1428 字节（`ping -M do -s 1400` 通、`-s 1450` 不通），且 ICMP 分片报文被丢弃 → 任何 >~1.4KB 的 SSH 传输（大脚本、git bundle、tar、大 stdout，甚至纯 `ssh 'echo <3000 字符>'`）都会挂起。属**网络基础设施问题**，非插件代码缺陷。修复需客户端 root 降低 MTU/MSS（`sudo ip link set eth0 mtu 1400` 或 `ip route ... advmss 1388`），或网络管理员修复隧道 MTU——本环境无 root（`sudo` 需密码）。
+1. **网络 MTU 黑洞（已解决）**：到 `192.168.9.166` 的路径有效 MTU ≈1428 且 PMTUD 被吞（>1.4KB SSH 传输挂起）。由用户在客户端降 MTU（`sysctl tcp_mtu_probing=1` 或 `ip link set eth0 mtu 1400`）解决，非插件代码缺陷。
 2. **账户修正**：`machines.json` 原 `user: root` 实际应为 `admin123`（已改，密码仍 `Huawei@123`）。
 3. **内核行数**：合计 ~3.3K 行，超出 PRD「≤1500 行」目标（约 2.2×）；单文件 ≤600 约束满足。
 4. **后台超时默认值**：PRD 5.2 写「默认 30min」，但 `cli.py` `--timeout` 默认 600s（T3 子代理已标出，需裁决）。
+5. **npu-smi 利用率解析**：A2 的 `npu-smi info` 布局下 AICore% 取 `n/a`（best-effort），卡数与型号解析正确。
+6. **镜像漂移**：现有容器跑旧 nightly（64aed8655de9），配置写 `nightly-main`（当前 ade04e75aa4a）——按新策略仅告警不复建。
