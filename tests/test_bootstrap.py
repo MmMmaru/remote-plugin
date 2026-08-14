@@ -305,7 +305,55 @@ class TestEnsureContainer(unittest.TestCase):
              mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             with self.assertRaises(RemotePluginError) as ctx:
                 bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
-        self.assertIn("docker pull 失败", str(ctx.exception))
+        msg = str(ctx.exception)
+        self.assertIn("docker pull 失败", msg)
+        self.assertNotIn("网络因素", msg)  # 非网络错误不加网络提示
+
+    def test_pull_network_error_hints_mirror_or_proxy_and_asks_user(self):
+        # 网络因素 + 宿主机无 proxy env → 提示换源/proxy，并提示向用户询问
+        fake = (
+            FakeSSH()
+            .on("docker version --format", cp())
+            .on("docker image inspect", cp(returncode=1))
+            .on("docker pull", cp(returncode=1, stderr=b"dial tcp: i/o timeout"))
+            .on("_proxy=", cp())  # env | grep 无输出 → 无 proxy
+        )
+        with mock.patch("remote_plugin.output.progress"), \
+             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
+            with self.assertRaises(RemotePluginError) as ctx:
+                bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
+        msg = str(ctx.exception)
+        self.assertIn("网络因素", msg)
+        self.assertIn("镜像源", msg)
+        self.assertIn("proxy", msg)
+        self.assertIn("向用户询问", msg)
+        self.assertNotIn("\n", msg)  # 单行错误契约
+
+    def test_pull_network_error_with_proxy_skips_user_hint(self):
+        # 网络因素 + 宿主机已有 proxy env → 只提示换源/proxy，不追加"问用户"
+        fake = (
+            FakeSSH()
+            .on("docker version --format", cp())
+            .on("docker image inspect", cp(returncode=1))
+            .on("docker pull", cp(returncode=1, stderr=b"TLS handshake timeout"))
+            .on("_proxy=", cp(stdout=b"https_proxy=http://proxy:8080\n"))
+        )
+        with mock.patch("remote_plugin.output.progress"), \
+             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
+            with self.assertRaises(RemotePluginError) as ctx:
+                bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
+        msg = str(ctx.exception)
+        self.assertIn("网络因素", msg)
+        self.assertNotIn("向用户询问", msg)
+
+    def test_is_network_pull_error_patterns(self):
+        for net in ("dial tcp: i/o timeout", "connection refused",
+                    "Temporary failure in name resolution", "x509: certificate",
+                    "TLS handshake timeout", "proxyconnect tcp: EOF"):
+            self.assertTrue(bootstrap._is_network_pull_error(net), net)
+        for other in ("manifest unknown", "unauthorized: authentication required",
+                      "no space left on device"):
+            self.assertFalse(bootstrap._is_network_pull_error(other), other)
 
     def test_nvidia_chip_uses_gpus_all(self):
         fake = (

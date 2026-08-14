@@ -133,8 +133,43 @@ def _ensure_image(vm: Endpoint, image: str) -> None:
     r = ssh.ssh_run(vm, f"docker pull {shlex.quote(image)}", timeout_sec=1800)
     if r.returncode != 0:
         err = r.stderr.decode("utf-8", "replace").strip() if r.stderr else ""
-        raise RemotePluginError(f"docker pull 失败 {image}: {err[-300:]}")
+        msg = f"docker pull 失败 {image}: {err[-300:]}"
+        if _is_network_pull_error(err):
+            msg += "；疑似网络因素：可更换镜像源（registry mirror）或配置 proxy 后重试"
+            if not _remote_has_proxy(vm):
+                msg += "；检测到宿主机未配置任何 proxy 环境变量，请向用户询问可用的 proxy 或镜像源后再重试"
+        raise RemotePluginError(msg)
     output.progress({"step": "container", "status": "pulled", "image": image})
+
+
+# docker pull 报错中的网络因素特征（超时/连接拒绝或重置/DNS/TLS/代理连接等）
+_NET_PULL_PATTERNS = (
+    "timeout", "timed out", "i/o timeout", "deadline exceeded",
+    "connection refused", "connection reset", "network is unreachable",
+    "no such host", "name resolution", "dns",
+    "tls handshake", "certificate", "x509",
+    "dial tcp", "proxyconnect", "unexpected eof",
+)
+
+
+def _is_network_pull_error(err: str) -> bool:
+    """判断 docker pull 的 stderr 是否为网络因素（best-effort 关键字匹配）。"""
+    low = err.lower()
+    return any(p in low for p in _NET_PULL_PATTERNS)
+
+
+def _remote_has_proxy(vm: Endpoint) -> bool:
+    """检查宿主机（远端）是否配置了任何 proxy 环境变量；检查失败按"已有"处理（不多嘴）。"""
+    try:
+        r = ssh.ssh_run(
+            vm,
+            "env | grep -iE '^(http|https|ftp|all|no)_proxy=' || true",
+            timeout_sec=30,
+        )
+    except ssh.SSHError:
+        return True
+    out = r.stdout.decode("utf-8", "replace") if r.stdout else ""
+    return bool(out.strip())
 
 
 def _desired_devices(vm: Endpoint, tags: dict) -> set[str]:
