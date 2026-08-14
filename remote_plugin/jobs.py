@@ -293,19 +293,8 @@ def job_stop(job_id: str) -> Job:
 # ---- 实时跟随（--follow 才 SSH）----
 
 def ssh_argv(endpoint: _config.Endpoint, remote_cmd: str) -> list[str]:
-    """构造 ssh 命令（BatchMode 参数与 ssh.py 一致；供流式/跟随等场景）。"""
-    return [
-        "ssh",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=15",
-        "-o", "ServerAliveInterval=15",
-        "-o", "ServerAliveCountMax=3",
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "LogLevel=ERROR",
-        "-p", str(endpoint.port),
-        f"{endpoint.user}@{endpoint.host}",
-        "bash", "-c", remote_cmd,
-    ]
+    """构造 ssh 命令，复用 ssh.py 的统一构造（含 BatchMode/KEX/docker exec 包装）。"""
+    return _ssh.ssh_argv(endpoint, remote_cmd)
 
 
 def _follow_remote(job: Job, stream: str) -> None:

@@ -163,38 +163,34 @@ class TestEnsureContainer(unittest.TestCase):
             .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n/dev/davinci_manager\n"))
             .on("docker inspect ", cp())  # 容器不存在（stdout 空）
             .on("docker run -d", cp())
-            .on("docker exec -i", cp())
-            .on("true", cp(), exact=True)  # 容器 sshd 探测
+            .on("docker exec ", cp())  # docker exec 校验
         )
         with mock.patch("remote_plugin.output.progress", side_effect=events.append), \
-             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run), \
-             mock.patch("remote_plugin.bootstrap.local_pubkey", return_value=PUBKEY):
+             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
         calls = fake.calls
-        # 顺序：docker 可用 → 拉镜像 → 创建 → 注入公钥 → sshd 就绪
+        # 顺序：docker 可用 → 拉镜像 → 创建 → docker exec 校验
         i_docker = self._index(calls, "docker version --format")
         i_pull = self._index(calls, "docker pull")
         i_run = self._index(calls, "docker run -d")
-        i_exec = self._index(calls, "docker exec -i")
-        i_probe = self._index(calls, "true", exact=True)
-        self.assertTrue(i_docker < i_pull < i_run < i_exec < i_probe)
-        # 创建参数：端口映射 + ascend 设备 + 镜像 + sshd
+        i_exec = self._index(calls, "docker exec ")
+        self.assertTrue(i_docker < i_pull < i_run < i_exec)
+        # 创建参数：无端口映射、无 sshd；含 ascend 设备 + 镜像 + 保活命令
         run_script = self._call(calls, "docker run -d")["script"]
-        self.assertIn("-p 46000:22", run_script)
+        self.assertNotIn("-p", run_script)
+        self.assertNotIn("sshd", run_script)
         self.assertIn("--device /dev/davinci0", run_script)
         self.assertIn("--device /dev/davinci_manager", run_script)
         self.assertIn(IMAGE, run_script)
-        self.assertIn("sshd -D", run_script)
-        # 容器免密：注入公钥
-        inject = self._call(calls, "docker exec -i")
-        self.assertEqual(inject["input_bytes"], (PUBKEY + "\n").encode("utf-8"))
-        # sshd 探测打到容器端点
-        probe = self._call(calls, "true", exact=True)
-        self.assertEqual(probe["endpoint"].port, 46000)
+        self.assertIn("tail -f /dev/null", run_script)
+        # docker exec 校验打到容器名
+        exec_script = self._call(calls, "docker exec ")["script"]
+        self.assertIn("xrs_vllm_main", exec_script)
         statuses = [e.get("status") for e in events]
         self.assertIn("docker_ok", statuses)
         self.assertIn("pulling", statuses)
         self.assertIn("created", statuses)
+        self.assertIn("exec_ok", statuses)
         self.assertNotIn("already_ready", statuses)
 
     def test_healthy_reuse_reports_already_ready_without_recreate(self):
@@ -205,20 +201,17 @@ class TestEnsureContainer(unittest.TestCase):
             .on("docker image inspect", cp())
             .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n/dev/davinci_manager\n"))
             .on("docker inspect ", cp(stdout=docker_inspect_healthy()))
-            .on("docker exec -i", cp())
-            .on("true", cp(), exact=True)
+            .on("docker exec ", cp())
         )
         with mock.patch("remote_plugin.output.progress", side_effect=events.append), \
-             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run), \
-             mock.patch("remote_plugin.bootstrap.local_pubkey", return_value=PUBKEY):
+             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
         statuses = [e.get("status") for e in events]
         self.assertIn("already_ready", statuses)
         self.assertFalse(any("docker run" in c["script"] for c in fake.calls))
         self.assertFalse(any("docker pull" in c["script"] for c in fake.calls))
-        # 复用仍注入公钥并探测 sshd
+        # 复用仍校验 docker exec
         self.assertTrue(any("docker exec" in c["script"] for c in fake.calls))
-        self.assertTrue(any(c["script"].strip() == "true" for c in fake.calls))
 
     def test_drift_raises_needs_repair_no_rebuild(self):
         drifted = json.loads(docker_inspect_healthy().decode("utf-8"))
@@ -239,9 +232,9 @@ class TestEnsureContainer(unittest.TestCase):
         self.assertFalse(any("docker run" in s for s in scripts))
         self.assertFalse(any("docker exec" in s for s in scripts))
 
-    def test_port_drift_raises(self):
+    def test_device_drift_raises(self):
         drifted = json.loads(docker_inspect_healthy().decode("utf-8"))
-        drifted[0]["HostConfig"]["PortBindings"] = {"22/tcp": [{"HostPort": "9999"}]}
+        drifted[0]["HostConfig"]["Devices"] = []
         fake = (
             FakeSSH()
             .on("docker version --format", cp())
@@ -253,7 +246,7 @@ class TestEnsureContainer(unittest.TestCase):
              mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             with self.assertRaises(bootstrap.NeedsRepairError) as ctx:
                 bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
-        self.assertIn("端口映射", str(ctx.exception))
+        self.assertIn("设备挂载漂移", str(ctx.exception))
 
     def test_not_running_is_drift(self):
         drifted = json.loads(docker_inspect_healthy().decode("utf-8"))
@@ -287,12 +280,10 @@ class TestEnsureContainer(unittest.TestCase):
             .on("docker image inspect", cp())
             .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
             .on("docker inspect ", cp(stdout=docker_inspect_healthy()))
-            .on("docker exec -i", cp())
-            .on("true", cp(), exact=True)
+            .on("docker exec ", cp())
         )
         with mock.patch("remote_plugin.output.progress"), \
-             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run), \
-             mock.patch("remote_plugin.bootstrap.local_pubkey", return_value=PUBKEY):
+             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
         self.assertFalse(any("docker pull" in c["script"] for c in fake.calls))
 
@@ -317,12 +308,10 @@ class TestEnsureContainer(unittest.TestCase):
             .on("docker pull", cp())
             .on("docker inspect ", cp())
             .on("docker run -d", cp())
-            .on("docker exec -i", cp())
-            .on("true", cp(), exact=True)
+            .on("docker exec ", cp())
         )
         with mock.patch("remote_plugin.output.progress"), \
-             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run), \
-             mock.patch("remote_plugin.bootstrap.local_pubkey", return_value=PUBKEY):
+             mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             bootstrap.ensure_container(make_vm(), make_container(), {"chip": "nvidia-h100"})
         run_script = self._call(fake.calls, "docker run -d")["script"]
         self.assertIn("--gpus all", run_script)

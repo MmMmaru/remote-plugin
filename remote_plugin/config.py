@@ -54,12 +54,17 @@ class Machine:
 
 @dataclass
 class Endpoint:
-    """解析出的 SSH 端点（PRD：resolve_endpoint 输出）。"""
+    """解析出的 SSH 端点（PRD：resolve_endpoint 输出）。
+
+    ``container`` 非空表示模式 A：一切远端操作经 ``docker exec -i <container>``
+    在容器内执行（对 VM 做 SSH，再由 SSH 侧包装 docker exec）。
+    """
 
     host: str
     port: int
     user: str
     workspace_root: str
+    container: str | None = None
 
 
 def find_remote_dir(start_dir: Path | None = None) -> Path | None:
@@ -221,27 +226,20 @@ def _warn_password_tracked(path: Path) -> None:
 
 
 def resolve_endpoint(machine: Machine, state_dir: Path) -> Endpoint:
-    """解析机器 SSH 端点。模式 A 优先读 state/endpoints/<alias>.json，缺失回退宿主机。"""
+    """解析机器 SSH 端点。
+
+    模式 A：SSH 到宿主机 + ``docker exec`` 进容器（``Endpoint.container`` 记容器名）；
+    workspace_root 取容器内路径。模式 B：直接 SSH 到目标，无容器包装。
+    """
     if machine.mode == "container":
-        endpoint_file = Path(state_dir) / "endpoints" / f"{machine.alias}.json"
-        if endpoint_file.is_file():
-            try:
-                data = json.loads(endpoint_file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as e:
-                raise ConfigError(f"endpoint 状态损坏 {endpoint_file}: {e}") from e
-            return Endpoint(
-                host=data.get("host", machine.host),
-                port=data.get("port", machine.port),
-                user=data.get("user", machine.user),
-                workspace_root=data.get(
-                    "workspace_root", machine.effective_workspace_root()
-                ),
-            )
+        if machine.container is None:
+            raise ConfigError(f"machine {machine.alias}（mode=container）缺 container 配置")
         return Endpoint(
             host=machine.host,
             port=machine.port,
             user=machine.user,
             workspace_root=machine.effective_workspace_root(),
+            container=machine.container.name,
         )
     return Endpoint(
         host=machine.host,

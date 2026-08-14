@@ -4,8 +4,8 @@
   ``SSH_ASKPASS`` + ``setsid`` 技巧（临时 askpass 脚本 echo 密码，用完即删），
   不使用 sshpass/expect/paramiko。
 - ``ensure_container``：docker 可用性 → 拉镜像 → 创建/复用容器（按 tags.chip 挂
-  设备）→ 容器 sshd 就绪 → 容器内写公钥免密。幂等：健康容器复用；漂移抛
-  ``NeedsRepairError`` 不自动重建。
+  设备）→ 校验可 ``docker exec``。幂等：健康容器复用；漂移抛 ``NeedsRepairError``
+  不自动重建。容器**无需 sshd/端口映射**，后续访问统一经 ``docker exec``。
 
 纯标准库 + 系统 ssh；密码绝不写入 state/、日志或任何持久文件。
 """
@@ -35,12 +35,8 @@ _ASKPASS_SSH_OPTS = [
     "-o", "KexAlgorithms=curve25519-sha256",
 ]
 
-# 容器 sshd 启动命令（镜像内 sshd 作为 PID1，缺 host key 时先生成）
-_CONTAINER_SSHD_CMD = (
-    "mkdir -p /run/sshd; "
-    "[ -f /etc/ssh/ssh_host_rsa_key ] || ssh-keygen -A; "
-    "exec /usr/sbin/sshd -D"
-)
+# 容器保活命令：容器内 PID1 长期驻留（无 sshd；访问统一经 docker exec）
+_CONTAINER_KEEPALIVE_CMD = "exec tail -f /dev/null"
 
 # 幂等追加公钥的 shell 片段：read 一行，已存在则跳过（避免重复行）
 _AUTH_KEYS_INNER = (
@@ -93,10 +89,10 @@ def push_pubkey(endpoint: Endpoint, pubkey: str, password: str | None) -> None:
 
 
 def ensure_container(vm: Endpoint, container: ContainerCfg, tags: dict) -> None:
-    """模式 A 容器引导：docker 可用 → 拉镜像（无则 pull）→ 创建/复用 → sshd → 容器免密。
+    """模式 A 容器引导：docker 可用 → 拉镜像（无则 pull）→ 创建/复用 → 校验 docker exec。
 
     幂等：健康容器直接复用并回 ``already_ready``；漂移抛 ``NeedsRepairError``，
-    不自动重建。镜像/容器名全部来自配置，不做镜像策略推断。
+    不自动重建。容器无需 sshd/端口映射；镜像/容器名全部来自配置。
     """
     if not container.name or not container.image:
         raise RemotePluginError("container.name / container.image 配置缺失")
@@ -111,8 +107,7 @@ def ensure_container(vm: Endpoint, container: ContainerCfg, tags: dict) -> None:
         if not ok:
             raise NeedsRepairError(f"容器 {container.name} 漂移（{reason}），不自动重建")
         output.progress({"step": "container", "status": "already_ready", "name": container.name})
-    _inject_pubkey(vm, container.name)
-    _wait_sshd(vm, container)
+    _wait_exec(vm, container.name)
     output.progress({"step": "container", "status": "ready", "name": container.name})
 
 
@@ -167,10 +162,9 @@ def _create_container(vm: Endpoint, container: ContainerCfg, tags: dict, devices
     cmd = (
         "docker run -d --name " + shlex.quote(container.name)
         + " --restart unless-stopped"
-        + f" -p {container.ssh_port}:22"
         + flags
         + " --entrypoint bash " + shlex.quote(container.image)
-        + " -c " + shlex.quote(_CONTAINER_SSHD_CMD)
+        + " -c " + shlex.quote(_CONTAINER_KEEPALIVE_CMD)
     )
     output.progress({"step": "container", "status": "creating", "name": container.name})
     r = ssh.ssh_run(vm, cmd, timeout_sec=300)
@@ -196,7 +190,7 @@ def _inspect_container(vm: Endpoint, name: str) -> dict | None:
 
 
 def _container_healthy(state: dict, container: ContainerCfg, desired_devices: set[str]) -> tuple[bool, str]:
-    """健康判定：运行中 + 镜像一致 + 端口映射(ssh_port->22)存在 + 设备挂载不缺失。"""
+    """健康判定：运行中 + 镜像一致 + 设备挂载不缺失（无 sshd/端口要求）。"""
     st = state.get("State") or {}
     if st.get("Running") is not True:
         return False, "容器未运行"
@@ -204,12 +198,6 @@ def _container_healthy(state: dict, container: ContainerCfg, desired_devices: se
     if cfg.get("Image") != container.image:
         return False, f"镜像漂移 {cfg.get('Image')!r} != {container.image!r}"
     hc = state.get("HostConfig") or {}
-    host_ports = []
-    for b in (hc.get("PortBindings") or {}).get("22/tcp") or []:
-        if isinstance(b, dict) and b.get("HostPort"):
-            host_ports.append(str(b["HostPort"]))
-    if str(container.ssh_port) not in host_ports:
-        return False, f"缺少端口映射 {container.ssh_port}->22（现有 {host_ports or '无'}）"
     if desired_devices:
         actual = {
             d.get("PathOnHost") for d in (hc.get("Devices") or [])
@@ -220,41 +208,18 @@ def _container_healthy(state: dict, container: ContainerCfg, desired_devices: se
     return True, ""
 
 
-def _inject_pubkey(vm: Endpoint, name: str) -> None:
-    """docker exec 把本地公钥写入容器 root authorized_keys（容器免密）。"""
-    key = local_pubkey()
-    script = f"docker exec -i {shlex.quote(name)} sh -c {shlex.quote(_AUTH_KEYS_INNER)}"
-    last_err = ""
-    for _ in range(5):  # 容器刚启动时 exec 可能短暂报 not running，重试几次
-        r = ssh.ssh_run(vm, script, timeout_sec=60, input_bytes=(key + "\n").encode("utf-8"))
-        if r.returncode == 0:
-            return
-        last_err = r.stderr.decode("utf-8", "replace").strip() if r.stderr else ""
-        time.sleep(1)
-    raise RemotePluginError(f"容器公钥注入失败（{name}）: {last_err[-300:]}")
-
-
-def _wait_sshd(vm: Endpoint, container: ContainerCfg) -> None:
-    """等待容器 sshd 在 container.ssh_port 免密可达（BatchMode 探测）。"""
-    ep = Endpoint(
-        host=vm.host,
-        port=container.ssh_port,
-        user=vm.user,
-        workspace_root=container.workspace_root,
-    )
-    output.progress({"step": "sshd", "status": "waiting", "port": container.ssh_port})
+def _wait_exec(vm: Endpoint, name: str) -> None:
+    """等待并校验容器可 ``docker exec``（重试若干次，容器刚创建时可能暂不可 exec）。"""
+    output.progress({"step": "container", "status": "exec-check", "name": name})
     last = ""
     for _ in range(20):
-        try:
-            r = ssh.ssh_run(ep, "true", timeout_sec=15)
-            if r.returncode == 0:
-                output.progress({"step": "sshd", "status": "ready", "port": container.ssh_port})
-                return
-            last = r.stderr.decode("utf-8", "replace").strip() if r.stderr else ""
-        except ssh.SSHError as e:
-            last = str(e)
-        time.sleep(2)
-    raise RemotePluginError(f"容器 sshd 未就绪（{ep.host}:{ep.port}）: {last[:200]}")
+        r = ssh.ssh_run(vm, f"docker exec {shlex.quote(name)} true", timeout_sec=30)
+        if r.returncode == 0:
+            output.progress({"step": "container", "status": "exec_ok", "name": name})
+            return
+        last = r.stderr.decode("utf-8", "replace").strip() if r.stderr else ""
+        time.sleep(1)
+    raise RemotePluginError(f"容器 {name} docker exec 校验失败: {last[-300:]}")
 
 
 # --------------------------------------------------------------------------

@@ -109,22 +109,19 @@ class TestResolveEndpoint(_TempDir):
         ep = config.resolve_endpoint(m, self.root)
         self.assertEqual((ep.host, ep.port), ("vm", 22))
 
-    def test_container_prefers_endpoint_file(self):
+    def test_container_mode_returns_vm_endpoint_with_container(self):
         m = config.Machine(
             alias="a",
             mode="container",
             host="vm",
             port=22,
-            container=config.ContainerCfg(ssh_port=46000, workspace_root="/ws"),
-        )
-        ep_dir = self.root / "endpoints"
-        ep_dir.mkdir(parents=True)
-        (ep_dir / "a.json").write_text(
-            json.dumps({"host": "vm", "port": 46000, "user": "root", "workspace_root": "/ws"}),
-            encoding="utf-8",
+            container=config.ContainerCfg(name="c1", ssh_port=46000, workspace_root="/ws"),
         )
         ep = config.resolve_endpoint(m, self.root)
-        self.assertEqual(ep.port, 46000)
+        # 模式 A：SSH 到宿主机（port 22）+ docker exec 进容器（container 名）
+        self.assertEqual(ep.port, 22)
+        self.assertEqual(ep.container, "c1")
+        self.assertEqual(ep.workspace_root, "/ws")
 
 
 if __name__ == "__main__":

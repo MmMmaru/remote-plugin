@@ -77,11 +77,14 @@ def cli_up(args) -> dict | None:
         ep = machine_up(machine, password)
     except NeedsRepairError as e:
         return {"status": "needs_repair", "machine": args.alias, "reason": str(e)}
+    ep_meta: dict = {"host": ep.host, "port": ep.port, "user": ep.user, "workspace_root": ep.workspace_root}
+    if ep.container:
+        ep_meta["container"] = ep.container
     return {
         "status": "ok",
         "machine": args.alias,
         "mode": machine.mode,
-        "endpoint": {"host": ep.host, "port": ep.port, "user": ep.user, "workspace_root": ep.workspace_root},
+        "endpoint": ep_meta,
     }
 
 
@@ -120,14 +123,15 @@ def _ssh_endpoint(machine: Machine) -> Endpoint:
 
 
 def _container_endpoint(machine: Machine) -> Endpoint:
-    """模式 A 容器直连端点（宿主机 + container.ssh_port + 容器内 workspace_root）。"""
+    """模式 A 工作面端点：宿主机 + 容器名（docker exec），workspace_root 取容器内路径。"""
     if machine.container is None:
         raise ConfigError(f"machine {machine.alias} 缺 container 配置（mode=container）")
     return Endpoint(
         host=machine.host,
-        port=machine.container.ssh_port,
+        port=machine.port,
         user=machine.user,
         workspace_root=machine.effective_workspace_root(),
+        container=machine.container.name,
     )
 
 
@@ -172,17 +176,21 @@ def _init_workspace(endpoint: Endpoint) -> None:
 
 
 def _write_endpoint(machine: Machine, ep: Endpoint) -> None:
-    """写 state/endpoints/<alias>.json（模式 A 容器直连端点，resolve_endpoint 读取）。"""
+    """写 state/endpoints/<alias>.json（模式 A 记录宿主机 + 容器名；也是 up 完成标记）。"""
     state = config.state_dir()
     ep_dir = state / "endpoints"
     ep_dir.mkdir(parents=True, exist_ok=True)
     path = ep_dir / f"{machine.alias}.json"
+    payload = {
+        "host": ep.host,
+        "port": ep.port,
+        "user": ep.user,
+        "workspace_root": ep.workspace_root,
+    }
+    if ep.container:
+        payload["container"] = ep.container
     path.write_text(
-        json.dumps(
-            {"host": ep.host, "port": ep.port, "user": ep.user, "workspace_root": ep.workspace_root},
-            ensure_ascii=False,
-            indent=2,
-        ),
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     output.progress({"step": "endpoint", "status": "written", "file": str(path)})

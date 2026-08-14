@@ -1,7 +1,7 @@
 """updown 模块单元测试（fake ssh 打桩）：编排顺序、幂等、漂移、密码路径、CLI handler。
 
 重点验证 spec T2 [本地] 步骤 1 的三条：
-- 编排顺序 = 免密 → docker → sshd → 工作区；
+- 编排顺序 = 免密 → docker → docker exec 校验 → 工作区；
 - 已免密时跳过密码路径（无 askpass、无公钥写入）；
 - 漂移返回 needs_repair（NeedsRepairError，不自动重建）。
 """
@@ -81,7 +81,7 @@ class TestMachineUp(UpTestBase):
         fake.on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n/dev/davinci_manager\n"))
         fake.on("docker inspect ", cp())  # 容器不存在
         fake.on("docker run -d", cp())
-        fake.on("docker exec -i", cp())
+        fake.on("docker exec ", cp())
         fake.on("mkdir -p", cp())
         password_calls = []
 
@@ -93,7 +93,8 @@ class TestMachineUp(UpTestBase):
              mock.patch("remote_plugin.bootstrap._password_ssh", side_effect=fake_password_ssh):
             ep = updown.machine_up(make_machine(), "S3cret!")
 
-        self.assertEqual((ep.host, ep.port, ep.user, ep.workspace_root), ("192.168.9.166", 46000, "root", WS))
+        self.assertEqual((ep.host, ep.port, ep.user, ep.container), ("192.168.9.166", 22, "root", "xrs_vllm_main"))
+        self.assertEqual(ep.workspace_root, WS)
         calls = fake.calls
 
         # ① 免密：探测失败 → SSH_ASKPASS 引导（1 次）→ 探测成功
@@ -109,38 +110,39 @@ class TestMachineUp(UpTestBase):
         # ② docker 阶段紧跟其后
         self.assertIn("docker version --format", calls[2]["script"])
 
-        # 顺序：免密 → docker → sshd → 工作区（按脚本索引）
+        # 顺序：免密 → docker → docker exec 校验 → 工作区（按脚本索引）
         i_docker = self._index(calls, lambda c: "docker version --format" in c["script"])
         i_pull = self._index(calls, lambda c: "docker pull" in c["script"])
         i_run = self._index(calls, lambda c: "docker run -d" in c["script"])
-        i_exec = self._index(calls, lambda c: "docker exec -i" in c["script"])
-        i_probe = self._index(calls, lambda c: c["script"].strip() == "true" and c["endpoint"].port == 46000)
+        i_exec = self._index(calls, lambda c: c["script"].strip().startswith("docker exec "))
         i_ws = self._index(calls, lambda c: ".remote-mirrors" in c["script"])
-        self.assertTrue(0 < 1 < i_docker < i_pull < i_run < i_exec < i_probe < i_ws)
+        self.assertTrue(0 < 1 < i_docker < i_pull < i_run < i_exec < i_ws)
 
-        # sshd 探测与工作区初始化都打在容器端点
-        self.assertEqual(calls[i_probe]["endpoint"].port, 46000)
+        # docker exec 校验打宿主机（port 22），工作区初始化经容器端点（container 名）
+        exec_call = calls[i_exec]
+        self.assertEqual(exec_call["endpoint"].port, 22)
+        self.assertIn("docker exec xrs_vllm_main", exec_call["script"])
         ws_call = calls[i_ws]
-        self.assertEqual(ws_call["endpoint"].port, 46000)
+        self.assertEqual(ws_call["endpoint"].container, "xrs_vllm_main")
         self.assertIn(f"{WS}/main", ws_call["script"])
         self.assertIn(".remote-mirrors", ws_call["script"])
         self.assertIn("core.autocrlf false", ws_call["script"])
         self.assertIn("core.eol lf", ws_call["script"])
 
-        # 事件级顺序：ssh → container(含 endpoint 写入) → sshd → endpoint → workspace → done
+        # 事件级顺序：ssh → container → exec 校验 → endpoint → workspace → done
         steps = self._event_steps()
         self.assertLess(steps.index("ssh"), steps.index("container"))
-        self.assertLess(steps.index("container"), steps.index("sshd"))
-        self.assertLess(steps.index("sshd"), steps.index("endpoint"))
+        self.assertLess(steps.index("container"), steps.index("endpoint"))
         self.assertLess(steps.index("endpoint"), steps.index("workspace"))
         self.assertEqual(steps[-1], "up")  # 最后是 up done 事件
         self.assertNotIn("already_passwordless", self._event_statuses())  # 首次 up 走引导路径
 
-        # endpoint 状态文件
+        # endpoint 状态文件：记录宿主机 + 容器名（不再有 ssh_port）
         ep_file = self.state / "endpoints" / "a2.json"
         self.assertTrue(ep_file.is_file())
         data = json.loads(ep_file.read_text(encoding="utf-8"))
-        self.assertEqual(data["port"], 46000)
+        self.assertEqual(data["port"], 22)
+        self.assertEqual(data["container"], "xrs_vllm_main")
         self.assertEqual(data["workspace_root"], WS)
 
         # 密码不落盘 state/、不进 progress
@@ -156,7 +158,7 @@ class TestMachineUp(UpTestBase):
         fake.on("docker image inspect", cp())
         fake.on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
         fake.on("docker inspect ", cp(stdout=docker_inspect_healthy()))
-        fake.on("docker exec -i", cp())
+        fake.on("docker exec ", cp())
         fake.on("mkdir -p", cp())
         pushed, password_calls = [], []
         with mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run), \
@@ -167,7 +169,8 @@ class TestMachineUp(UpTestBase):
             ep = updown.machine_up(make_machine(), None)
         self.assertEqual(pushed, [])
         self.assertEqual(password_calls, [])
-        self.assertEqual(ep.port, 46000)
+        self.assertEqual(ep.port, 22)
+        self.assertEqual(ep.container, "xrs_vllm_main")
         # 首次调用即免密探测成功，无 VM 公钥写入步骤
         self.assertEqual(fake.calls[0]["script"].strip(), "true")
         self.assertIn("already_passwordless", self._event_statuses())
@@ -199,11 +202,11 @@ class TestMachineUp(UpTestBase):
         fake.on("docker image inspect", cp())
         fake.on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n/dev/davinci_manager\n"))
         fake.on("docker inspect ", cp(stdout=docker_inspect_healthy()))
-        fake.on("docker exec -i", cp())
+        fake.on("docker exec ", cp())
         fake.on("mkdir -p", cp())
         with mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             ep = updown.machine_up(make_machine(), None)
-        self.assertEqual(ep.port, 46000)
+        self.assertEqual((ep.port, ep.container), (22, "xrs_vllm_main"))
         scripts = [c["script"] for c in fake.calls]
         self.assertFalse(any("docker run" in s for s in scripts))
         self.assertFalse(any("docker pull" in s for s in scripts))

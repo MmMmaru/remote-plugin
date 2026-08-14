@@ -17,14 +17,13 @@ def cp(returncode=0, stdout=b"", stderr=b""):
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-def docker_inspect_healthy(image=IMAGE, port=46000, devices=("/dev/davinci0", "/dev/davinci_manager")):
-    """健康容器的 docker inspect stdout（bytes JSON）。"""
+def docker_inspect_healthy(image=IMAGE, devices=("/dev/davinci0", "/dev/davinci_manager")):
+    """健康容器的 docker inspect stdout（bytes JSON）。无 sshd/端口（docker exec 模型）。"""
     return json.dumps([
         {
             "State": {"Running": True},
             "Config": {"Image": image},
             "HostConfig": {
-                "PortBindings": {"22/tcp": [{"HostIp": "", "HostPort": str(port)}]},
                 "Devices": [
                     {"PathOnHost": d, "PathInContainer": d, "CgroupPermissions": "m"}
                     for d in devices
