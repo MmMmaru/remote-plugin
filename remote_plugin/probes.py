@@ -99,17 +99,22 @@ if command -v python3 >/dev/null 2>&1; then
 import sys, time, urllib.request
 url = sys.argv[1]
 t0 = time.time()
-n = 0
 try:
-    with urllib.request.urlopen(url, timeout=8) as r:
-        while n < 131072 and time.time() - t0 < 6:  # 最多 128KB / 6s，测下载速度
+    r = urllib.request.urlopen(url, timeout=8)
+    latency_ms = (time.time() - t0) * 1000
+    # 下载测速（best-effort：失败记 0，不影响可达性判断）
+    n = 0
+    try:
+        while n < 131072 and time.time() - t0 < 6:  # 最多 128KB / 6s
             chunk = r.read(32768)
             if not chunk:
                 break
             n += len(chunk)
-    dt = time.time() - t0
-    bps = int(n / dt) if dt > 0 else 0
-    print("ok %d %.1f %d" % (r.status, dt * 1000, bps))
+        dt = time.time() - t0
+        bps = int(n / dt) if dt > 0 else 0
+    except Exception:
+        bps = 0
+    print("ok %d %.1f %d" % (r.status, latency_ms, bps))
 except Exception as e:
     print("fail %s" % type(e).__name__)
 PYEOF
