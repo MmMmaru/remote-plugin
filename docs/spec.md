@@ -112,7 +112,7 @@ remote-plugin/
   - ① 免密引导：密码经 stdin/env 传入（不落盘、不进日志），公钥写 VM `authorized_keys`；已免密则跳过
   - ② 容器：docker 可用性 → 拉镜像（无则 pull）→ 创建/复用 `xrs_vllm_main`（按 `tags.chip` 挂设备）→ 校验可 `docker exec` → 写 `state/endpoints/<alias>.json`（记录宿主机 + 容器名，**不含 sshd/端口映射**）
   - ③ 工作区初始化：`workspace_root`、`main/`、mirror 缓存目录；`core.autocrlf=false`、`core.eol=lf`
-  - 幂等：健康容器复用并回 `already ready`；漂移回 `needs_repair` 不自动重建；模式 B 只做免密校验 + ③
+  - 幂等：健康容器复用并回 `already ready`；容器未运行/无法 exec → `needs_repair` 不自动重建；镜像版本、设备挂载差异仅告警（复用），NPU 可用性由 `verify` 兜底；模式 B 只做免密校验 + ③
 - `updown.machine_down(machine: Machine) -> None`：停删受管容器，不动 VM 其他资源
 - `bootstrap.push_pubkey(endpoint, pubkey: str, password: str | None) -> None`
 - `bootstrap.ensure_container(vm: Endpoint, container: ContainerCfg, tags: dict) -> None`：pull → run → 校验 `docker exec`；健康容器复用，漂移回 `needs_repair`

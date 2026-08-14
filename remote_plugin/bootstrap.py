@@ -190,13 +190,22 @@ def _inspect_container(vm: Endpoint, name: str) -> dict | None:
 
 
 def _container_healthy(state: dict, container: ContainerCfg, desired_devices: set[str]) -> tuple[bool, str]:
-    """健康判定：运行中 + 镜像一致 + 设备挂载不缺失（无 sshd/端口要求）。"""
+    """健康判定：仅「容器运行中」为硬性条件；镜像/设备差异仅告警（复用已有容器）。
+
+    NPU 是否真正可用由 ``verify``（容器内跑 npu-smi 交叉校验 cards）兜底；
+    此处镜像版本、设备挂载方式因机器而异（driver bind-mount vs /dev 节点），
+    不做硬性阻断，避免对已建立的容器误报 needs_repair。
+    """
     st = state.get("State") or {}
     if st.get("Running") is not True:
         return False, "容器未运行"
     cfg = state.get("Config") or {}
-    if cfg.get("Image") != container.image:
-        return False, f"镜像漂移 {cfg.get('Image')!r} != {container.image!r}"
+    img = cfg.get("Image")
+    if img and img != container.image:
+        output.progress({
+            "step": "container", "status": "image_drift",
+            "running": str(img)[:24], "configured": container.image,
+        })
     hc = state.get("HostConfig") or {}
     if desired_devices:
         actual = {
@@ -204,7 +213,10 @@ def _container_healthy(state: dict, container: ContainerCfg, desired_devices: se
             if isinstance(d, dict) and d.get("PathOnHost")
         }
         if not desired_devices.issubset(actual):
-            return False, f"设备挂载漂移（期望 {sorted(desired_devices)} 实际 {sorted(actual)}）"
+            output.progress({
+                "step": "container", "status": "device_drift",
+                "expected": sorted(desired_devices), "actual": sorted(actual),
+            })
     return True, ""
 
 

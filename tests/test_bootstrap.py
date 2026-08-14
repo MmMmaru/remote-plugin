@@ -213,40 +213,45 @@ class TestEnsureContainer(unittest.TestCase):
         # 复用仍校验 docker exec
         self.assertTrue(any("docker exec" in c["script"] for c in fake.calls))
 
-    def test_drift_raises_needs_repair_no_rebuild(self):
+    def test_image_drift_warns_but_reuses(self):
+        # 镜像版本漂移：仅告警 + 复用（运行中且可 exec），不抛 needs_repair
         drifted = json.loads(docker_inspect_healthy().decode("utf-8"))
         drifted[0]["Config"]["Image"] = "other/image:tag"
+        events = []
         fake = (
             FakeSSH()
             .on("docker version --format", cp())
             .on("docker image inspect", cp())
             .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
             .on("docker inspect ", cp(stdout=json.dumps(drifted).encode("utf-8")))
+            .on("docker exec ", cp())
         )
-        with mock.patch("remote_plugin.output.progress"), \
+        with mock.patch("remote_plugin.output.progress", side_effect=events.append), \
              mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
-            with self.assertRaises(bootstrap.NeedsRepairError) as ctx:
-                bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
-        self.assertIn("镜像漂移", str(ctx.exception))
+            bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
+        # 未重建，且镜像漂移有告警事件
         scripts = [c["script"] for c in fake.calls]
         self.assertFalse(any("docker run" in s for s in scripts))
-        self.assertFalse(any("docker exec" in s for s in scripts))
+        self.assertTrue(any(e.get("status") == "image_drift" for e in events))
+        self.assertTrue(any("docker exec" in s for s in scripts))
 
-    def test_device_drift_raises(self):
+    def test_device_drift_warns_but_reuses(self):
         drifted = json.loads(docker_inspect_healthy().decode("utf-8"))
         drifted[0]["HostConfig"]["Devices"] = []
+        events = []
         fake = (
             FakeSSH()
             .on("docker version --format", cp())
             .on("docker image inspect", cp())
             .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
             .on("docker inspect ", cp(stdout=json.dumps(drifted).encode("utf-8")))
+            .on("docker exec ", cp())
         )
-        with mock.patch("remote_plugin.output.progress"), \
+        with mock.patch("remote_plugin.output.progress", side_effect=events.append), \
              mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
-            with self.assertRaises(bootstrap.NeedsRepairError) as ctx:
-                bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
-        self.assertIn("设备挂载漂移", str(ctx.exception))
+            bootstrap.ensure_container(make_vm(), make_container(), {"chip": "ascend-a2"})
+        self.assertTrue(any(e.get("status") == "device_drift" for e in events))
+        self.assertTrue(any("docker exec" in c["script"] for c in fake.calls))
 
     def test_not_running_is_drift(self):
         drifted = json.loads(docker_inspect_healthy().decode("utf-8"))

@@ -65,8 +65,8 @@ def ssh_run(
     """在远端（或经 docker exec 的容器内）执行 shell 脚本。
 
     - ``input_bytes is None``：``bash -s``，``script`` 作为 stdin 传给 bash。
-    - ``input_bytes`` 非 None：``bash -c script``，``input_bytes`` 作为远端
-      命令的 stdin 透传（二进制流场景，如 tar/git bundle）。
+    - ``input_bytes`` 非 None：``bash -c script``，``input_bytes`` 作为远端命令
+      的 stdin 透传（二进制流场景，如 tar/git bundle）。
 
     返回 ``subprocess.CompletedProcess``；超时抛 ``SSHError``。
     """

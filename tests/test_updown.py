@@ -178,7 +178,7 @@ class TestMachineUp(UpTestBase):
 
     def test_drift_raises_needs_repair_no_rebuild(self):
         drifted = json.loads(docker_inspect_healthy().decode("utf-8"))
-        drifted[0]["Config"]["Image"] = "other/image:tag"
+        drifted[0]["State"]["Running"] = False  # 容器未运行（硬失败）
         fake = FakeSSH()
         fake.on("true", cp(), exact=True)
         fake.on("docker version --format", cp())
@@ -188,7 +188,7 @@ class TestMachineUp(UpTestBase):
         with mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             with self.assertRaises(NeedsRepairError) as ctx:
                 updown.machine_up(make_machine(), None)
-        self.assertIn("漂移", str(ctx.exception))
+        self.assertIn("未运行", str(ctx.exception))
         scripts = [c["script"] for c in fake.calls]
         self.assertFalse(any("docker run" in s for s in scripts))
         self.assertFalse(any("docker exec" in s for s in scripts))
