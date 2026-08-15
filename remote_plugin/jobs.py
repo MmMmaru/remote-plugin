@@ -43,7 +43,6 @@ class Job:
     cards: list[int] | None = None
     owner: str = ""
     task: str | None = None
-    worktree: str = "main"
     command: str = ""
     cwd: str = ""
     status: str = "running"

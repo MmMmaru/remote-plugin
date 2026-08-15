@@ -1,7 +1,7 @@
 """T2 up / down：免密引导 → 容器生命周期 → 工作区初始化的编排层。
 
 - ``machine_up``：① 免密引导（已免密跳过）→ ② 容器（docker→拉镜像→创建/复用→
-  sshd→容器免密→写 state/endpoints）→ ③ 工作区初始化（workspace_root/main、
+  sshd→容器免密→写 state/endpoints）→ ③ 工作区初始化（workspace_root、
   .remote-mirrors、core.autocrlf=false、core.eol=lf）。幂等：健康容器复用回
   ``already_ready``；漂移抛 ``NeedsRepairError`` 不自动重建；模式 B 只做免密校验 + ③。
 - ``machine_down``：停删受管容器，不动 VM 上其他资源；模式 B 无容器为 noop。
@@ -159,11 +159,11 @@ def _ensure_passwordless(endpoint: Endpoint, password: str | None) -> None:
 
 
 def _init_workspace(endpoint: Endpoint) -> None:
-    """③ 工作区初始化：workspace_root/main、.remote-mirrors；git 行尾配置（同步前置）。"""
+    """③ 工作区初始化：workspace_root、.remote-mirrors；git 行尾配置。"""
     ws = endpoint.workspace_root
     quoted = shlex.quote(ws)
     script = (
-        f"mkdir -p {quoted}/main {quoted}/.remote-mirrors\n"
+        f"mkdir -p {quoted} {quoted}/.remote-mirrors\n"
         "git config --global core.autocrlf false\n"
         "git config --global core.eol lf\n"
     )

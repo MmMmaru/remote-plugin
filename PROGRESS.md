@@ -51,7 +51,7 @@
 - [x] 注册 PPU 裸机 SSH 端点：`8.130.213.80:1016`，工作区 `/root/xrs/vllm-workspace`。
 - [x] `remote up ppu`：SSH 已免密，工作区和 `.remote-mirrors` 初始化成功。
 - [x] `remote verify ppu`：通用环境检查为 `ok`；PPU 不启用 Ascend/NPU 专属探针。
-- [x] `remote sync ppu --worktree main`：snapshot commit 与远端 HEAD 一致。
+- [x] `remote sync ppu`：snapshot commit 与远端 HEAD 一致（现已直接同步 workspace_root）。
 - [x] `remote run ppu`：不调用 NPU 命令、不声明 NPU 卡占用的通用冒烟测试 exit code 0。
 - [x] 更新 `SKILL.md`：明确 PPU 可用范围及 `npu-smi`、`torch_npu`、NPU 卡级探针等当前限制。
 
@@ -63,3 +63,10 @@
 4. **后台超时默认值**：PRD 5.2 写「默认 30min」，但 `cli.py` `--timeout` 默认 600s（T3 子代理已标出，需裁决）。
 5. **npu-smi 利用率解析（已解决）**：A2 紧凑布局（`0/0` 无空格）与无 AICore% 列的布局曾导致 AICore%/HBM 解析错位或 n/a；awk 已统一撑开斜杠并按列数判定（7 段含 AICore%、6 段记 n/a），`machines`/`status --probe` 均可展示每卡 HBM 用量/总量与 AICore%。
 6. **镜像漂移**：现有容器跑旧 nightly（64aed8655de9），配置写 `nightly-main`（当前 ade04e75aa4a）——按新策略仅告警不复建。
+
+## 2026-08-15 workspace 同步收尾
+
+- 删除 `worktree` 参数，`sync`/`sync --paths`/`pull`/`run` 默认直接使用远端 `workspace_root`。
+- 新增 workspace 根定位与 Git 仓库发现：递归发现非 ignored 仓库，并纳入 workspace 内已注册的 Git worktree。
+- 保留原有 snapshot → bundle/mirror → materialize → HEAD/dirty/sha256 抽检校验链路；为根仓库排除 `.remote-mirrors` 与 `.remote-logs` 运行目录，避免旧 dirty 校验误报。
+- 更新 README、SKILL、PRD、spec 与 harness 文档；新增 workspace/worktree 单测与整链路回归。

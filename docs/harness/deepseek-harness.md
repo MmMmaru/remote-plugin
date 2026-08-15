@@ -19,7 +19,7 @@ agent 侧最小接入（可整段复制）：
 1. 经 ctx.skills 加载 remote-plugin skill，读取其 SKILL.md 指令。
 2. 所有远程操作一律经 bash 工具调用 remote CLI，不裸用 ssh：
    ./remote machines
-   ./remote sync <alias> --worktree <id>
+   ./remote sync <alias>
    ./remote run <alias> --background --task "<做什么>" --cards 0,1 --cmd "<命令>" --timeout <秒>
 3. 编译/安装前读 state/docs/<alias>.md 档案中的 pip index / proxy；
    环境不确定时停下来问人类，不盲目重试或换源。
@@ -30,8 +30,8 @@ agent 侧最小接入（可整段复制）：
 ```bash
 # agent 经 bash 工具执行：先查占用，再同步，再后台编译
 ./remote machines
-./remote sync 192.168.9.166 --worktree main
-./remote run 192.168.9.166 --worktree main --background --task "编译验证" --cards 0,1 \
+./remote sync 192.168.9.166
+./remote run 192.168.9.166 --background --task "编译验证" --cards 0,1 \
   --cmd "pip install --no-deps -e . --no-build-isolation" --timeout 3600
 ```
 

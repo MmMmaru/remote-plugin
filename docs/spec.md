@@ -124,7 +124,7 @@ remote-plugin/
    - 预期：全链路一次完成；`state/endpoints/192.168.9.166.json` 含 `container: xrs_vllm_main`；密码只存在于 machines.json，不出现在 state/ 与任何日志（grep 验证）
 3. **[真机-串行]** 再次 `remote up 192.168.9.166` → `already ready` 秒回
 4. **[真机-串行]** `ssh -o BatchMode=yes admin123@192.168.9.166 "docker exec xrs_vllm_main npu-smi info -l"` → 免密成功、容器内可见 8 卡
-5. **[真机-串行]** 容器内 `/home/x50063850/vllm-ascend-workspace/{main,.remote-mirrors}` 存在；`git config --global core.autocrlf` 为 false
+5. **[真机-串行]** 容器内 `/home/x50063850/vllm-ascend-workspace/.remote-mirrors` 存在；`git config --global core.autocrlf` 为 false
 6. **[真机-串行，可选，需用户确认]** `remote down 192.168.9.166` → 容器删除，VM 上其他容器不受影响；**默认不执行**
 
 ---
@@ -135,8 +135,8 @@ remote-plugin/
 
 **关键函数**：
 
-- `runner.run_remote(machine, worktree, command, cwd, env, cards, task, timeout_sec, background) -> Job`
-  - 默认 cwd = worktree 目录（`main` → `<workspace_root>/main/`，其余 → `<workspace_root>/<id>/`）
+- `runner.run_remote(machine, command, cwd, env, cards, task, timeout_sec, background) -> Job`
+  - 默认 cwd = `<workspace_root>`；不再通过 `worktree` 参数选择远端目录
   - stdout/stderr 落盘 `state/jobs/<job_id>/`；前台返回截断预览（head/tail 各 4000 字符）+ exit_code + 日志路径；`--background` 立即返回 job_id
   - 返回 JSON 附带该机当前 running jobs 占用提示（advisory，不阻塞）
 - `jobs.new_job_id() -> str`：`j-<yyyyMMdd>-<HHmmss>-<两位序号>`
@@ -164,8 +164,8 @@ remote-plugin/
 
 **关键函数**：
 
-- `sync_paths.sync_paths(machine: Machine, worktree: str, paths: list[Path], local_root: Path) -> SyncResult`
-  - 本地 `tar` 打包指定路径（保留相对结构）→ `ssh | tar -x` 覆盖到 worktree 对应目录；二进制流传输不改行尾；传输后 sha256 抽检
+- `sync_paths.sync_paths(machine: Machine, paths: list[Path], local_root: Path) -> SyncResult`
+  - 本地 `tar` 打包指定路径（保留相对结构）→ `ssh | tar -x` 覆盖到 `<workspace_root>`；二进制流传输不改行尾；传输后 sha256 抽检
   - 输出 `{status: ready|failed, files: int, bytes: int, sha256_ok: bool}`
   - 校验：paths 必须存在且位于 local_root 内；空列表报错
 
@@ -173,7 +173,7 @@ remote-plugin/
 
 1. **[本地]** 单测：paths 越界（`../x`）、不存在、空列表 → 明确报错；tar 打包清单含目录递归
 2. **[真机-串行]** 修改 `remote_plugin/config.py` + `docs/PRD.md` + 新建一目录，执行
-   `remote sync 192.168.9.166 --worktree t4-test --paths remote_plugin/config.py docs/PRD.md docs/`
+   `remote sync 192.168.9.166 --paths remote_plugin/config.py docs/PRD.md docs/`
    - 预期：`status: ready`、`sha256_ok: true`、files/bytes 计数正确
 3. **[真机-串行]** 远端 `sha256sum` 与本地逐文件一致
 4. **[真机-串行]** 同步一个 LF 行尾的 shell 脚本 → 远端 `od -c` 验证行尾仍为 LF（本地模拟 Windows 场景：以 `core.autocrlf=true` 的客户端配置同步，结果不变）
@@ -186,11 +186,12 @@ remote-plugin/
 
 **关键函数**：
 
-- `snapshot.build_snapshots(local_root: Path) -> SnapshotSet`
+- `snapshot.build_snapshots(local_root: Path, extra_repositories: list[tuple[Path, str]] | None = None) -> SnapshotSet`
   - postorder 递归（叶子 submodule → 父 → 根）；每 repo 临时 index 全量 add、剔除 ignored 与子模块路径、gitlink 替换为子 snapshot id、写确定性 parentless commit；记录 `source_head`
   - 输出：每 repo 的 snapshot sha + changed_paths
-- `sync_git.sync_git(machine: Machine, worktree: str, local_root: Path) -> SyncResult`
-  - bundle → ssh 二进制流 → 容器内 mirror（`<workspace_root>/.remote-mirrors/`）→ parity ref → materialize 到 worktree 目录（子模块 URL 改写为容器内 mirror，递归显式展开）→ commit id 与 manifest 逐一校验，不符 fail closed
+- `sync_git.sync_git(machine: Machine, local_root: Path) -> SyncResult`
+  - bundle → ssh 二进制流 → 容器内 mirror（`<workspace_root>/.remote-mirrors/`）→ parity ref → materialize 到 workspace 内各 repo 目录（子模块 URL 改写为容器内 mirror，递归显式展开）→ 按旧逻辑校验 commit/dirty/sha256，不符 fail closed
+  - snapshot 还会发现 workspace 内 registered Git worktree，并将其作为独立 repo 节点同步
   - no-change 快路径：snapshot 与上次一致 → 单次 SSH 校验后回 `no_change`
   - 输出 `{status: ready|no_change|blocked|failed, snapshots: {...}, remote_heads: {...}, changed_paths: [...]}`
   - 绝不触发编译/install；未 `up` 过 → `blocked: need up`
@@ -199,8 +200,8 @@ remote-plugin/
 **E2E 验证**：
 
 1. **[本地]** 单测：临时目录造"主 repo + 一层 submodule"，dirty（改跟踪文件 + 新未跟踪文件）→ `build_snapshots` 产物确定性（连跑两次 sha 相同）、gitlink 替换正确、`source_head` 记录正确
-2. **[真机-串行]** 用上述 fixture 仓库：`remote sync 192.168.9.166 --worktree t5-test`
-   - 预期：`status: ready`；远端 worktree 内各 repo commit 与返回的 snapshots 一致；dirty 改动与未跟踪文件在远端可见
+2. **[真机-串行]** 用上述 fixture 仓库：`remote sync 192.168.9.166`
+   - 预期：`status: ready`；远端 workspace 内各 repo commit 与返回的 snapshots 一致；dirty 改动与未跟踪文件在远端可见
 3. **[真机-串行]** 无改动再跑 → `no_change` 且只有一次轻量 SSH（用 ssh 调用计数或耗时佐证）
 4. **[真机-串行]** 修改 submodule 内容后 sync → 远端可见；切 submodule 到另一 commit 后 sync → 版本正确落地
 5. **[真机-串行]** 远端 sha256 抽检与本地一致（CRLF 验收：`core.autocrlf=true` 客户端配置下同步，远端仍 LF）
@@ -236,6 +237,6 @@ docs/harness/{codex.md, claude-code.md, deepseek-harness.md}
 
 - 密码只允许存在于用户手写配置的 `password` 字段（该文件禁止入 git）；绝不写入 state/、日志或任何其他文件
 - CLI 统一 `remote <cmd>`；进度 stderr、结果 stdout 单行 JSON
-- 远端路径一律以 `workspace_root` + worktree 解析，禁止写死绝对路径
+- 远端路径一律以 `workspace_root` 解析，禁止写死绝对路径
 - 所有 SSH 操作有超时上限，半开连接 fail closed
 - 子代理开发期只执行 **[本地]** 验证；**[真机-串行]** 步骤由验收阶段按序执行

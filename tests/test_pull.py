@@ -42,9 +42,9 @@ class _TempBase(unittest.TestCase):
         # resolve() 展开 Windows 8.3 短名；workspace_root 转 MSYS 供本地 bash 执行
         self.tmp = Path(self._tmp.name).resolve()
         self.ws = self.tmp / "ws"
-        (self.ws / "main" / "out" / "sub").mkdir(parents=True)
-        (self.ws / "main" / "out" / "a.json").write_bytes(b'{"acc": 0.91}\n')
-        (self.ws / "main" / "out" / "sub" / "b.log").write_bytes(b"log-line\n" * 100)
+        (self.ws / "out" / "sub").mkdir(parents=True)
+        (self.ws / "out" / "a.json").write_bytes(b'{"acc": 0.91}\n')
+        (self.ws / "out" / "sub" / "b.log").write_bytes(b"log-line\n" * 100)
         (self.ws / "abs.bin").write_bytes(b"\x00\x01\x02" * 512)
         self.machine = config.Machine(
             alias="p1", mode="ssh", host="127.0.0.1", port=22, user="u",
@@ -69,16 +69,16 @@ class _TempBase(unittest.TestCase):
 
 class TestResolveRemotePaths(unittest.TestCase):
     def _resolve(self, paths):
-        return pull._resolve_remote_paths("/vllm-workspace", "main", paths)
+        return pull._resolve_remote_paths("/vllm-workspace", paths)
 
-    def test_relative_resolves_against_worktree(self):
+    def test_relative_resolves_against_workspace(self):
         base, rels = self._resolve(["out"])
-        self.assertEqual(base, "/vllm-workspace/main")
+        self.assertEqual(base, "/vllm-workspace")
         self.assertEqual(rels, ["out"])
 
     def test_multi_paths_single_tar_common_base(self):
         base, rels = self._resolve(["out/a.json", "out/sub"])
-        self.assertEqual(base, "/vllm-workspace/main/out")
+        self.assertEqual(base, "/vllm-workspace/out")
         self.assertEqual(rels, ["a.json", "sub"])
 
     def test_absolute_used_as_is(self):
@@ -103,7 +103,7 @@ class TestResolveRemotePaths(unittest.TestCase):
 
 class TestPullPipeline(_TempBase):
     def test_ready_full_pipeline(self):
-        result = pull_paths(self.machine, "main", ["out"], self.dest)
+        result = pull_paths(self.machine, ["out"], self.dest)
         self.assertEqual(result.status, "ready")
         self.assertEqual(result.files, 2)
         self.assertEqual(result.bytes, 14 + 900)
@@ -116,14 +116,14 @@ class TestPullPipeline(_TempBase):
         self.assertEqual(result.to_dict()["status"], "ready")
 
     def test_multi_paths_single_tar(self):
-        result = pull_paths(self.machine, "main", ["out/a.json", "out/sub"], self.dest)
+        result = pull_paths(self.machine, ["out/a.json", "out/sub"], self.dest)
         self.assertEqual(result.status, "ready")
         self.assertEqual(result.files, 2)
         self.assertTrue((self.dest / "a.json").is_file())
         self.assertTrue((self.dest / "sub" / "b.log").is_file())
 
     def test_absolute_path(self):
-        result = pull_paths(self.machine, "main", [msys_path(self.ws / "abs.bin")], self.dest)
+        result = pull_paths(self.machine, [msys_path(self.ws / "abs.bin")], self.dest)
         self.assertEqual(result.status, "ready")
         self.assertEqual(result.files, 1)
         self.assertEqual((self.dest / "abs.bin").read_bytes(), b"\x00\x01\x02" * 512)
@@ -131,43 +131,37 @@ class TestPullPipeline(_TempBase):
     def test_sha256_mismatch_fails_closed(self):
         self.fake.tamper = "out/a.json"
         with self.assertRaises(PullError) as ctx:
-            pull_paths(self.machine, "main", ["out"], self.dest)
+            pull_paths(self.machine, ["out"], self.dest)
         self.assertIn("sha256 校验不一致", str(ctx.exception))
 
     def test_remote_missing_fails(self):
         with self.assertRaises(PullError) as ctx:
-            pull_paths(self.machine, "main", ["no-such"], self.dest)
+            pull_paths(self.machine, ["no-such"], self.dest)
         self.assertIn("远端路径不存在", str(ctx.exception))
         # 缺失时只做清单、不发 tar
         self.assertFalse(any("tar -cf -" in s for s in self.fake.scripts))
 
     def test_traversal_rejected_before_any_ssh(self):
         with self.assertRaises(PullError):
-            pull_paths(self.machine, "main", ["../x"], self.dest)
+            pull_paths(self.machine, ["../x"], self.dest)
         self.assertEqual(self.fake.scripts, [])
-
-    def test_invalid_worktree_rejected(self):
-        with self.assertRaises(config.RemotePluginError):
-            pull_paths(self.machine, "a/b", ["out"], self.dest)
-
 
 class TestCliPull(_TempBase):
     def test_parser_shape(self):
         args = cli.build_parser().parse_args(
-            ["pull", "p1", "out", "x.log", "--dest", "d", "--worktree", "t1"]
+            ["pull", "p1", "out", "x.log", "--dest", "d"]
         )
         self.assertEqual(args.command, "pull")
         self.assertEqual(args.alias, "p1")
         self.assertEqual(args.remote_paths, ["out", "x.log"])
         self.assertEqual(args.dest, "d")
-        self.assertEqual(args.worktree, "t1")
 
     def test_registered_in_commands(self):
         self.assertIn("pull", cli.COMMANDS)
 
     def test_cli_pull_payload(self):
         args = SimpleNamespace(
-            alias="p1", remote_paths=["out"], dest=str(self.dest), worktree="main"
+            alias="p1", remote_paths=["out"], dest=str(self.dest)
         )
         with mock.patch.object(config, "load_machines", return_value={"p1": self.machine}):
             payload = pull.cli_pull(args)
@@ -178,7 +172,7 @@ class TestCliPull(_TempBase):
 
     def test_cli_pull_unknown_alias(self):
         args = SimpleNamespace(
-            alias="ghost", remote_paths=["out"], dest=str(self.dest), worktree="main"
+            alias="ghost", remote_paths=["out"], dest=str(self.dest)
         )
         with mock.patch.object(config, "load_machines", return_value={}):
             with self.assertRaises(config.ConfigError):

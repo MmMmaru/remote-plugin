@@ -22,7 +22,6 @@ from remote_plugin.sync_paths import (
     SyncResult,
     _collect_files,
     _resolve_paths,
-    _validate_worktree,
     sync_paths,
 )
 from tests.fake_ssh import BASH, TAR, local_path, msys_path
@@ -35,15 +34,15 @@ class FakeRemote:
         self.local_cmds: list[list[str]] = []
         self.remote_cmds: list[str] = []
         self.scripts: list[str] = []
-        self.last_wt: Path | None = None
+        self.last_workspace: Path | None = None
         self.tamper: str | None = None   # 抽检前改写远端文件 → 模拟 sha256 不一致
         self.remove: str | None = None   # 抽检前删除远端文件 → 模拟缺文件
 
     @staticmethod
-    def _wt_from(cmd: str) -> str:
+    def _workspace_from(cmd: str) -> str:
         m = re.search(r"'([^']*)'", cmd)
         if not m:
-            raise AssertionError(f"无法从命令解析 worktree 目录: {cmd!r}")
+            raise AssertionError(f"无法从命令解析 workspace 目录: {cmd!r}")
         # 命令内是 MSYS 形式（/c/...），可直接喂给 Git Bash 的 tar/bash；
         # Python 侧落盘操作需经 local_path 转回本地路径
         return m.group(1)
@@ -51,16 +50,16 @@ class FakeRemote:
     def ssh_pipe(self, endpoint, local_cmd: list[str], remote_cmd: str) -> int:
         self.local_cmds.append(local_cmd)
         self.remote_cmds.append(remote_cmd)
-        wt = self._wt_from(remote_cmd)
-        self.last_wt = local_path(wt)
-        self.last_wt.mkdir(parents=True, exist_ok=True)
+        workspace = self._workspace_from(remote_cmd)
+        self.last_workspace = local_path(workspace)
+        self.last_workspace.mkdir(parents=True, exist_ok=True)
         tar_proc = subprocess.run(local_cmd, capture_output=True)
         if tar_proc.returncode != 0:
             raise ssh.SSHError(
                 f"本地命令失败（{tar_proc.returncode}）: {' '.join(local_cmd)}"
             )
         extract = subprocess.run(
-            [TAR, "-x", "-C", wt], input=tar_proc.stdout, capture_output=True
+            [TAR, "-x", "-C", workspace], input=tar_proc.stdout, capture_output=True
         )
         if extract.returncode != 0:
             raise ssh.SSHError(f"远端 tar -x 失败（{extract.returncode}）")
@@ -68,11 +67,11 @@ class FakeRemote:
 
     def ssh_run(self, endpoint, script: str, timeout_sec: int = 300, input_bytes=None):
         self.scripts.append(script)
-        wt = local_path(self._wt_from(script))
+        workspace = local_path(self._workspace_from(script))
         if self.tamper is not None:
-            (wt / self.tamper).write_bytes(b"TAMPERED-BYTES")
+            (workspace / self.tamper).write_bytes(b"TAMPERED-BYTES")
         if self.remove is not None:
-            (wt / self.remove).unlink()
+            (workspace / self.remove).unlink()
         return subprocess.run([BASH, "-c", script], input=input_bytes, capture_output=True)
 
 
@@ -161,19 +160,12 @@ class TestResolvePaths(_TempBase):
             _resolve_paths(self.tmp_root / "no-such-root", [Path("f.txt")])
         self.assertIn("local_root", str(ctx.exception))
 
-    def test_worktree_validation(self):
-        for bad in ("", "../x", "a/b", "a\\b", ".", ".."):
-            with self.assertRaises(SyncPathsError):
-                _validate_worktree(bad)
-        self.assertEqual(_validate_worktree("main"), "main")
-        self.assertEqual(_validate_worktree("t4-test"), "t4-test")
-
     def test_sync_paths_empty_paths_raises_before_any_ssh(self):
         with mock.patch("remote_plugin.ssh.ssh_pipe") as pm, \
              mock.patch("remote_plugin.ssh.ssh_run") as rm, \
              mock.patch("remote_plugin.config.state_dir") as sd:
             with self.assertRaises(SyncPathsError) as ctx:
-                sync_paths(self.machine, "t4-test", [], self.local_root)
+                sync_paths(self.machine, [], self.local_root)
         self.assertIn("不能为空", str(ctx.exception))
         pm.assert_not_called()
         rm.assert_not_called()
@@ -183,7 +175,7 @@ class TestResolvePaths(_TempBase):
         with mock.patch("remote_plugin.ssh.ssh_pipe") as pm, \
              mock.patch("remote_plugin.config.state_dir") as sd:
             with self.assertRaises(SyncPathsError) as ctx:
-                sync_paths(self.machine, "t4-test", [Path("../x")], self.local_root)
+                sync_paths(self.machine, [Path("../x")], self.local_root)
         self.assertIn("越界", str(ctx.exception))
         pm.assert_not_called()
         sd.assert_not_called()
@@ -291,7 +283,6 @@ class TestSyncPathsPipeline(_TempBase):
         with patcher_pipe as pm, patcher_run as rm, patcher_state:
             result = sync_paths(
                 self.machine,
-                "t4-test",
                 paths if paths is not None else self.paths,
                 self.local_root,
             )
@@ -314,19 +305,19 @@ class TestSyncPathsPipeline(_TempBase):
         self.assertEqual(lc[1:6], ["-C", tar_path(self.local_root), "-cf", "-", "--"])
         self.assertEqual(set(lc[6:]), {"a.sh", "crlf.txt", "docs"})
 
-        # 远端命令：先 mkdir -p worktree，再 tar -x 覆盖（命令内为 MSYS 形式路径）
-        wt = msys_path(self.tmp_root / "ws" / "t4-test")
+        # 远端命令：先 mkdir -p workspace，再 tar -x 覆盖（命令内为 MSYS 形式路径）
+        wt = msys_path(self.tmp_root / "ws")
         rc = pm.call_args.args[2]
         self.assertIn(f"mkdir -p '{wt}'", rc)
         self.assertIn(f"tar -x -C '{wt}'", rc)
 
-        # 抽检脚本：cd worktree 后 xargs -0 sha256sum（NUL 分隔，天然防引号问题）
+        # 抽检脚本：cd workspace 后 xargs -0 sha256sum（NUL 分隔，天然防引号问题）
         script = rm.call_args.args[1]
         self.assertIn(f"cd '{wt}' || exit 1", script)
         self.assertIn("xargs -0 sha256sum --", script)
 
         # 二进制流不改行尾：远端落盘字节与本地逐字节一致（LF 与 CRLF 原样保留）
-        remote_wt = self.tmp_root / "ws" / "t4-test"
+        remote_wt = self.tmp_root / "ws"
         self.assertEqual((remote_wt / "a.sh").read_bytes(), self.lf_script)
         self.assertEqual((remote_wt / "crlf.txt").read_bytes(), self.crlf_text)
         self.assertEqual((remote_wt / "docs" / "sub" / "nested.py").read_bytes(), self.nested)
@@ -355,7 +346,7 @@ class TestSyncPathsPipeline(_TempBase):
         self.assertTrue(result.sha256_ok)
         self.assertEqual(result.files, 0)
         self.assertEqual(result.bytes, 0)
-        self.assertTrue((Path(self.tmp_root / "ws" / "t4-test" / "emptydir")).is_dir())
+        self.assertTrue((Path(self.tmp_root / "ws" / "emptydir")).is_dir())
         rm.assert_not_called()  # 无常规文件时不发空的假 sha256sum 请求
 
     def test_transfer_failure_raises_ssherror(self):
@@ -363,7 +354,7 @@ class TestSyncPathsPipeline(_TempBase):
             "remote_plugin.ssh.ssh_pipe", side_effect=ssh.SSHError("pipe boom")
         ), mock.patch("remote_plugin.config.state_dir", return_value=self.state):
             with self.assertRaises(ssh.SSHError):
-                sync_paths(self.machine, "t4-test", [Path("a.sh")], self.local_root)
+                sync_paths(self.machine, [Path("a.sh")], self.local_root)
 
     def test_result_is_synresult(self):
         fake = FakeRemote()

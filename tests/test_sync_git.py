@@ -55,7 +55,7 @@ class FakeSSH:
             # 模拟远端对齐后又被外部改动（HEAD 漂移）
             subprocess.run(
                 [
-                    "git", "-C", str(self.ws / "main"),
+                    "git", "-C", str(self.ws),
                     "-c", "user.name=saboteur", "-c", "user.email=s@t",
                     "commit", "--allow-empty", "-qm", "sabotage",
                 ],
@@ -160,7 +160,7 @@ class SyncGitBase(unittest.TestCase):
 class TestSyncGit(SyncGitBase):
     def test_ready_end_to_end(self):
         machine = self._ssh_machine()
-        result = sync_git.sync_git(machine, "main", self.local_root)
+        result = sync_git.sync_git(machine, self.local_root)
         self.assertEqual(result.status, "ready")
         self.assertEqual(set(result.snapshots), {"sub", "."})
         self.assertEqual(result.remote_heads, result.snapshots)
@@ -169,25 +169,25 @@ class TestSyncGit(SyncGitBase):
         self.assertTrue((self.ws / ".remote-mirrors" / "sub.git" / "objects").is_dir())
         # worktree 各 repo HEAD == snapshot
         self.assertEqual(
-            _git(self.ws / "main", "rev-parse", "HEAD").stdout.strip(),
+            _git(self.ws, "rev-parse", "HEAD").stdout.strip(),
             result.snapshots["."],
         )
         self.assertEqual(
-            _git(self.ws / "main" / "sub", "rev-parse", "HEAD").stdout.strip(),
+            _git(self.ws / "sub", "rev-parse", "HEAD").stdout.strip(),
             result.snapshots["sub"],
         )
         # 内容对齐：dirty/untracked 远端可见，ignored 不可见
-        self.assertEqual((self.ws / "main" / "a.txt").read_text(encoding="utf-8"), "v2")
-        self.assertEqual((self.ws / "main" / "b.txt").read_text(encoding="utf-8"), "new")
-        self.assertFalse((self.ws / "main" / "ignored.txt").exists())
-        self.assertEqual((self.ws / "main" / "sub" / "x.txt").read_text(encoding="utf-8"), "x2")
+        self.assertEqual((self.ws / "a.txt").read_text(encoding="utf-8"), "v2")
+        self.assertEqual((self.ws / "b.txt").read_text(encoding="utf-8"), "new")
+        self.assertFalse((self.ws / "ignored.txt").exists())
+        self.assertEqual((self.ws / "sub" / "x.txt").read_text(encoding="utf-8"), "x2")
         # 子模块 URL 改写为容器内 mirror
-        cfg = (self.ws / "main" / ".git" / "config").read_text(encoding="utf-8")
+        cfg = (self.ws / ".git" / "config").read_text(encoding="utf-8")
         # git-for-windows 会把 URL 归一化为原生形式（C:/...），Linux 上即 str() 本身
         want_url = str(self.ws / ".remote-mirrors" / "sub.git").replace("\\", "/")
         self.assertIn(want_url, cfg)
         # 本地状态已记录（供快路径）
-        state_file = self.local_root / ".remote" / "state" / "sync" / "t5box" / "main.json"
+        state_file = self.local_root / ".remote" / "state" / "sync" / "t5box" / "workspace.json"
         self.assertTrue(state_file.is_file())
         self.assertEqual(
             json.loads(state_file.read_text(encoding="utf-8"))["snapshot_commits"],
@@ -201,14 +201,35 @@ class TestSyncGit(SyncGitBase):
         self.assertIn("sub/x.txt", cp)
         self.assertNotIn("ignored.txt", cp)
 
+    def test_registered_worktree_is_synced_without_cli_selector(self):
+        """workspace 内 registered worktree 自动获得独立 snapshot 与远端目录。"""
+        worktree = self.local_root / ".worktrees" / "sub-feature"
+        worktree.parent.mkdir()
+        _git(self.local_root / "sub", "worktree", "add", "-b", "feature", str(worktree))
+        (worktree / "feature.txt").write_text("feature\n", encoding="utf-8")
+
+        result = sync_git.sync_git(self._ssh_machine(), self.local_root)
+
+        self.assertEqual(result.status, "ready")
+        self.assertIn(".worktrees/sub-feature", result.snapshots)
+        self.assertIn(".worktrees/sub-feature/feature.txt", result.changed_paths)
+        self.assertEqual(
+            _git(self.ws / ".worktrees" / "sub-feature", "rev-parse", "HEAD").stdout.strip(),
+            result.snapshots[".worktrees/sub-feature"],
+        )
+        self.assertEqual(
+            (self.ws / ".worktrees" / "sub-feature" / "feature.txt").read_text(encoding="utf-8"),
+            "feature\n",
+        )
+
     def test_no_change_fast_path_single_ssh(self):
         machine = self._container_machine()
-        r1 = sync_git.sync_git(machine, "main", self.local_root)
+        r1 = sync_git.sync_git(machine, self.local_root)
         self.assertEqual(r1.status, "ready")
         pipes_after_first = len(self.fake.pipe_calls)
         self.assertGreater(pipes_after_first, 0)  # 首次同步按 repo 数推 bundle
         calls_after_first = len(self.fake.run_calls)
-        r2 = sync_git.sync_git(machine, "main", self.local_root)
+        r2 = sync_git.sync_git(machine, self.local_root)
         self.assertEqual(r2.status, "no_change")
         self.assertEqual(r2.snapshots, r1.snapshots)
         self.assertEqual(r2.changed_paths, [])
@@ -221,7 +242,7 @@ class TestSyncGit(SyncGitBase):
             alias="noup", mode="container", host="h", port=22, user="root",
             container=ContainerCfg(image="i", name="n", ssh_port=22, workspace_root="/x"),
         )
-        result = sync_git.sync_git(machine, "main", self.local_root)
+        result = sync_git.sync_git(machine, self.local_root)
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.reason, "need up")
         self.assertEqual(self.fake.run_calls, [])  # 零 SSH
@@ -231,14 +252,14 @@ class TestSyncGit(SyncGitBase):
             alias="t", mode="ssh", host="h", port=22, user="root",
             workspace_root=msys_path(self.tmp / "nope"),
         )
-        result = sync_git.sync_git(machine, "main", self.local_root)
+        result = sync_git.sync_git(machine, self.local_root)
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.reason, "need up")
 
     def test_failed_when_remote_head_mismatch(self):
         machine = self._ssh_machine()
         self.fake.sabotage = True
-        result = sync_git.sync_git(machine, "main", self.local_root)
+        result = sync_git.sync_git(machine, self.local_root)
         self.assertEqual(result.status, "failed")
         self.assertNotEqual(result.remote_heads, result.snapshots)
         self.assertIn("fail closed", result.reason or "")
@@ -247,14 +268,14 @@ class TestSyncGit(SyncGitBase):
         machine = self._ssh_machine()
         self.fake.probe_rc = 255
         with self.assertRaises(ssh.SSHError):
-            sync_git.sync_git(machine, "main", self.local_root)
+            sync_git.sync_git(machine, self.local_root)
 
     def test_not_git_local_root_raises(self):
         plain = self.local_root / "plain"  # 在 fixture 内，避免 state_dir 落到 home
         plain.mkdir()
         machine = self._ssh_machine()
         with self.assertRaises(snapshot.SnapshotError):
-            sync_git.sync_git(machine, "main", plain)
+            sync_git.sync_git(machine, plain)
 
 
 class TestCliSync(SyncGitBase):
@@ -263,7 +284,7 @@ class TestCliSync(SyncGitBase):
 
     def test_dispatches_to_sync_paths(self):
         machine = self._machine()
-        args = SimpleNamespace(alias="a", worktree="main", paths=["x.py", "tests/"])
+        args = SimpleNamespace(alias="a", paths=["x.py", "tests/"])
         with mock.patch.object(config, "load_machines", return_value={"a": machine}), \
              mock.patch.object(
                  sync_paths, "sync_paths",
@@ -274,13 +295,12 @@ class TestCliSync(SyncGitBase):
         m.assert_called_once()
         call = m.call_args
         self.assertIs(call.args[0], machine)
-        self.assertEqual(call.args[1], "main")
-        self.assertEqual([str(p) for p in call.args[2]], ["x.py", "tests"])
-        self.assertIsInstance(call.args[3], Path)
+        self.assertEqual([str(p) for p in call.args[1]], ["x.py", "tests"])
+        self.assertIsInstance(call.args[2], Path)
 
     def test_dispatches_to_sync_git(self):
         machine = self._machine()
-        args = SimpleNamespace(alias="a", worktree="main", paths=None)
+        args = SimpleNamespace(alias="a", paths=None)
         with mock.patch.object(config, "load_machines", return_value={"a": machine}), \
              mock.patch.object(
                  sync_git, "sync_git",
@@ -292,14 +312,14 @@ class TestCliSync(SyncGitBase):
         self.assertEqual(result["changed_paths"], ["f"])
 
     def test_unknown_alias_raises(self):
-        args = SimpleNamespace(alias="zzz", worktree="main", paths=None)
+        args = SimpleNamespace(alias="zzz", paths=None)
         with mock.patch.object(config, "load_machines", return_value={}):
             with self.assertRaises(config.ConfigError):
                 sync_git.cli_sync(args)
 
     def test_sync_paths_module_missing_graceful(self):
         machine = self._machine()
-        args = SimpleNamespace(alias="a", worktree="main", paths=["x"])
+        args = SimpleNamespace(alias="a", paths=["x"])
         with mock.patch.object(config, "load_machines", return_value={"a": machine}), \
              mock.patch.dict(sys.modules, {"remote_plugin.sync_paths": None}):
             with self.assertRaises(config.RemotePluginError) as ctx:

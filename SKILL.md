@@ -74,9 +74,9 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 | `remote verify <alias>` | 环境探测，刷新 `state/docs/<alias>.md` 机器档案 |
 | `remote up <alias> [--password-env NAME | --password-stdin]` | 容器模式拉起/复用容器；SSH 模式只做免密引导与工作区初始化 |
 | `remote down <alias>` | 停止并移除容器模式的受管容器；SSH/裸机模式为空操作 |
-| `remote sync <alias> [--worktree <id>]` | 方法 A：整树 git 同步（字节级一致，不改行尾） |
-| `remote sync <alias> --paths <file>... [--worktree <id>]` | 方法 B：指定路径定向覆盖（热修补） |
-| `remote run <alias> --cmd "..." [--worktree <id>] [--cwd <path>] [--env K=V] [--cards 0,1] [--task "..."] [--timeout 600] [--background]` | 远程执行命令 |
+| `remote sync <alias>` | 方法 A：整个 workspace 的 Git 同步（字节级一致，不改行尾） |
+| `remote sync <alias> --paths <file>...` | 方法 B：workspace 内指定路径定向覆盖（热修补） |
+| `remote run <alias> --cmd "..." [--cwd <path>] [--env K=V] [--cards 0,1] [--task "..."] [--timeout 600] [--background]` | 远程执行命令，默认 cwd 为 workspace_root |
 | `remote jobs [--machine <alias>]` | 任务列表（唯一查询入口，含 stale 标记） |
 | `remote logs <job-id> [--tail 200] [--stderr]` | 读任务日志（本地落盘） |
 | `remote stop <job-id>` | 停止后台任务 |
@@ -93,7 +93,7 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 3. **有镜像、有容器**：`remote up` 复用现有容器，做 `docker exec` 可执行校验 + 工作区初始化，并回 `already ready`；容器未运行/不可 exec 才报 `needs_repair`（不自动重建）。
 
 `up` 同时完成：免密引导（把本地公钥写入宿主机 `authorized_keys`）、
-工作区初始化（`workspace_root/main`、`.remote-mirrors`、`core.autocrlf=false`、`core.eol=lf`）。
+工作区初始化（`workspace_root`、`.remote-mirrors`、`core.autocrlf=false`、`core.eol=lf`）。
 
 对于 `mode: "ssh"` 的裸机或已有容器端点，`up` 不执行 `docker pull`、`docker run`
 或 `docker exec`，只完成 SSH 免密校验/引导和工作区初始化。
@@ -119,9 +119,9 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 1. `remote machines` → 选择空闲机器（无 running jobs，或占用与你需要的卡不冲突）。
 2. 读 `state/docs/<alias>.md`；缺失/过期先 `remote verify <alias>`。确认
    workspace_root、pip index、proxy 等网络事实。
-3. `remote sync <alias> --worktree <id>` 同步代码（只对齐代码，不做编译）。
+3. `remote sync <alias>` 同步整个 workspace（只对齐代码，不做编译）；workspace 内已注册的 Git worktree 会自动纳入。
 4. 长任务显式声明占用并后台执行。NPU 任务示例：
-   `remote run <alias> --worktree <id> --background --task "编译验证" --cards 0,1 --cmd "pip install --no-deps -e . --no-build-isolation" --timeout 3600`
+   `remote run <alias> --background --task "编译验证" --cards 0,1 --cmd "pip install --no-deps -e . --no-build-isolation" --timeout 3600`
    PPU 任务不要照搬 `--cards`，除非已经明确 PPU 的资源占用语义。
    记录返回的 `job_id`。
 5. `remote logs <job-id> --tail 200` 跟踪进度；结束后 `remote jobs --machine <alias>`
@@ -131,7 +131,7 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 
 ## 边界与约定
 
-- 远端路径一律以 `workspace_root` + worktree 解析，禁止写死绝对路径。
+- 远端路径一律以 `workspace_root` 解析，禁止写死绝对路径；`pull` 的相对路径以该根目录为基准。
 - 密码/敏感字段不落盘：不把密码写进命令、日志或 state。
 - 所有 SSH 操作有超时上限，半开连接 fail closed；长任务用 `--timeout` 显式声明。
 - 前台命令同样生成 Job 记录；任务查询统一走 `remote jobs`。

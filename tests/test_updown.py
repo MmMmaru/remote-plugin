@@ -124,7 +124,7 @@ class TestMachineUp(UpTestBase):
         self.assertIn("docker exec xrs_vllm_main", exec_call["script"])
         ws_call = calls[i_ws]
         self.assertEqual(ws_call["endpoint"].container, "xrs_vllm_main")
-        self.assertIn(f"{WS}/main", ws_call["script"])
+        self.assertIn(f"mkdir -p {WS}", ws_call["script"])
         self.assertIn(".remote-mirrors", ws_call["script"])
         self.assertIn("core.autocrlf false", ws_call["script"])
         self.assertIn("core.eol lf", ws_call["script"])
@@ -224,7 +224,7 @@ class TestMachineUp(UpTestBase):
         self.assertEqual((ep.port, ep.workspace_root), (22, "/direct-ws"))
         self.assertEqual(len(fake.calls), 2)  # 只有免密校验 + 工作区
         self.assertFalse(any("docker" in c["script"] for c in fake.calls))
-        self.assertIn("/direct-ws/main", fake.calls[1]["script"])
+        self.assertIn("mkdir -p /direct-ws", fake.calls[1]["script"])
         self.assertFalse((self.state / "endpoints" / "a2.json").exists())
 
     def test_mode_ssh_not_passwordless_with_password_bootstraps(self):

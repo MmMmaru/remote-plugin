@@ -89,15 +89,19 @@
 - 失联 reconcile：查询时发现本地记录 running 但远端进程已不存在（或机器不可达），标记 `stale` 并不再计入占用
 - 占用是 **advisory（提示式）**：`run` 不阻塞，但返回中附带该机器当前 running jobs 的占用提示，由 agent/人自行避让
 
-### 2.3 WorkTree（远端隔离目录）
+### 2.3 Workspace（同步根目录）
 
-远端并发隔离单元，**目录级隔离，不做 per-agent 独立容器**。
+远端同步根目录就是配置中的 `<workspace_root>`，不再创建或选择 `main` 子目录，也不再向
+CLI/API 暴露 `worktree` 参数。
 
-- 所有 worktree 目录直接创建在 `<workspace_root>` 下，与 main 平行（同一文件夹内）
-- `worktree_id = "main"`（默认）：映射为 `<workspace_root>/main/`
-- 其余 `worktree_id`：映射为 `<workspace_root>/<worktree_id>/`
-- sync 落点与 run 默认 cwd 均按 worktree 解析
-- 编译在同一个 worktree 内进行，不同 worktree 互不干扰
+- `remote sync` 从当前目录向上定位本地 workspace（优先取最近的 `.remote` 目录），直接把
+  整个 workspace 对齐到远端 `<workspace_root>`。
+- 快照递归发现 workspace 内的 Git 仓库；每个仓库按相对 workspace 的路径 materialize。
+- 各仓库通过 `git worktree` 注册、且路径位于 workspace 内的 worktree 自动作为独立仓库节点
+  纳入同步，即使父仓库的 `.gitignore` 忽略了其目录；workspace 外的 worktree 不同步。
+- 其他目录和文件仍由所属仓库的 `.gitignore` 规则筛选；插件运行目录（`.remote`）和远端
+  运行时目录（`.remote-mirrors`、`.remote-logs`）不作为业务代码清理。
+- `remote run` 缺省 cwd 为远端 `<workspace_root>`；`--cwd` 仍可显式指定绝对路径。
 
 ### 2.4 Job（远程任务）
 
@@ -108,9 +112,8 @@
   "cards": [0, 1],
   "owner": "agent-<session-id>",
   "task": "vllm 编译验证",
-  "worktree": "main",
   "command": "pip install -e .",
-  "cwd": "/vllm-workspace/main",
+  "cwd": "/vllm-workspace",
   "status": "running|done|failed|stopped|timeout",
   "exit_code": null,
   "started_at": "...",
@@ -170,7 +173,7 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 - **`up` 流程（模式 A，按序执行）**：
   1. **免密引导**：初始只有账户 + 密码（来自配置 `password` 字段或 stdin/env，绝不进日志与 state）→ 将本地公钥写入 VM `authorized_keys`，之后所有 VM 操作走免密 key 登录
   2. **容器**：确认 docker 可用 → 拉取 `container.image`（不存在时）→ 创建/复用名为 `container.name` 的容器（按 `tags.chip` 挂载对应加速卡设备）→ 校验容器可 `docker exec` → 写入本地 endpoint 状态（记录宿主机 + 容器名），后续所有操作 = **SSH 到宿主机 + `docker exec` 进容器**（容器无需 sshd、无需端口映射）
-  3. **工作区初始化**（原 `init`，并入本步）：经 `docker exec` 在容器内创建 `workspace_root`、`main/` 目录与 git mirror 缓存目录；设置 `core.autocrlf=false`、`core.eol=lf` 等同步前置配置
+  3. **工作区初始化**（原 `init`，并入本步）：经 `docker exec` 在容器内创建 `workspace_root` 与 git mirror 缓存目录；设置 `core.autocrlf=false`、`core.eol=lf` 等同步前置配置
 - **模式 B 的 `up`**：只做免密配置校验 + 上述第 3 步工作区初始化
 
 > 说明：模式 A 的容器访问**统一经 `docker exec`**（SSH 到宿主机后执行 `docker exec -i <container> <cmd>`），不要求在容器内跑 sshd、不做端口映射；`container.ssh_port` 字段保留但不再使用（向后兼容）。
@@ -185,23 +188,23 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 
 ### 4.1 方法 A：git 递归传输（默认，整树同步）
 
-- **CLI**：`remote sync <alias> [--worktree <id>]`
-- **内核函数**：`sync_git(machine: Machine, worktree: str, local_root: Path) -> SyncResult`
+- **CLI**：`remote sync <alias>`
+- **内核函数**：`sync_git(machine: Machine, local_root: Path) -> SyncResult`
 - **流程**（继承 vllm remote-code-parity 主线，裁剪后）：
   1. postorder 递归（叶子 submodule → 父 submodule → 根 repo）为每个 repo 构造**确定性 parentless synthetic snapshot commit**：临时 index 全量 add，剔除 ignore 与子模块路径，子模块 gitlink 替换为子 snapshot id；真实 HEAD 记为 `source_head`
   2. 每个 repo 生成 git bundle，经 **ssh 二进制流**送入容器内 mirror（`<workspace_root>/.remote-mirrors/`），fetch 后更新 parity ref
-  3. materialize：worktree 目录内 fetch + 强制对齐到 snapshot ref，子模块 URL 改写为容器内 mirror 路径并递归显式展开
-  4. 校验容器内各 repo commit id 与 manifest 完全一致才算成功（fail closed）
+  3. materialize：workspace 内各 repo 目录 fetch + 强制对齐到 snapshot ref，子模块 URL 改写为容器内 mirror 路径并递归显式展开
+  4. 按既有校验逻辑检查容器内各 repo commit id、dirty 状态和 sha256 抽检，任一不符即 fail closed
 - **输出**：`{status: ready|no_change|blocked|failed, snapshots: {repo: sha}, remote_heads: {repo: sha}, changed_paths: [...]}`
 - no-change 快路径：snapshot 与上次一致时单次 SSH 校验后直接返回
 
 ### 4.2 方法 B：指定文件/路径传输
 
-- **CLI**：`remote sync <alias> --paths src/foo.py tests/ [--worktree <id>]`
-- **内核函数**：`sync_paths(machine: Machine, worktree: str, paths: list[Path]) -> SyncResult`
-- **功能**：将指定文件/目录经 `tar | ssh` 覆盖到 worktree 对应相对路径；不做 git 语义，不进 mirror
+- **CLI**：`remote sync <alias> --paths src/foo.py tests/`
+- **内核函数**：`sync_paths(machine: Machine, paths: list[Path], local_root: Path) -> SyncResult`
+- **功能**：将指定文件/目录经 `tar | ssh` 覆盖到 workspace_root 对应相对路径；不做 git 语义，不进 mirror
 - 用于热修补、单文件调试；大目录请用方法 A
-- **反向（产物拉回）**：`remote pull <alias> <remote_path>... --dest <dir> [--worktree <id>]` 把远端文件/目录经 `tar | ssh` 二进制流拉回本地（相对路径按 worktree 解析，支持容器内绝对路径；远端 sha256 清单 + 本地重算比对，不一致 fail closed），用于 profiling/benchmark 产物下载
+- **反向（产物拉回）**：`remote pull <alias> <remote_path>... --dest <dir>` 把远端文件/目录经 `tar | ssh` 二进制流拉回本地（相对路径按 workspace_root 解析，支持容器内绝对路径；远端 sha256 清单 + 本地重算比对，不一致 fail closed），用于 profiling/benchmark 产物下载
 
 ### 4.3 字节级一致（明确验收项）
 
@@ -218,9 +221,9 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 
 ### 5.1 远程执行
 
-- **CLI**：`remote run <alias> --cmd "..." [--worktree <id>] [--cwd <path>] [--env K=V ...] [--cards 0,1] [--task "..."] [--timeout 600] [--background]`
-- **内核函数**：`run_remote(machine: Machine, worktree: str, command: str, cwd: str | None, env: dict, cards: list[int] | None, task: str | None, timeout_sec: int, background: bool) -> Job`
-- **功能**：经 ssh 在容器内执行命令；默认 cwd 为 worktree 目录；`--background` 立即返回 job_id
+- **CLI**：`remote run <alias> --cmd "..." [--cwd <path>] [--env K=V ...] [--cards 0,1] [--task "..."] [--timeout 600] [--background]`
+- **内核函数**：`run_remote(machine: Machine, command: str, cwd: str | None, env: dict, cards: list[int] | None, task: str | None, timeout_sec: int, background: bool) -> Job`
+- **功能**：经 ssh 在容器内执行命令；默认 cwd 为 workspace_root；`--background` 立即返回 job_id
 - **输出（前台）**：截断后的 stdout/stderr 预览 + exit_code + 日志文件路径（预览 head/tail 各 4000 字符，无多层 envelope）
 
 ### 5.2 任务与日志

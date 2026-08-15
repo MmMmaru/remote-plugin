@@ -58,17 +58,6 @@ class TestPreviewText(unittest.TestCase):
         self.assertEqual(p["head"], text)
 
 
-class TestWorktreeDir(unittest.TestCase):
-    def test_main_and_named(self):
-        self.assertEqual(runner.worktree_dir("/vllm-workspace", "main"), "/vllm-workspace/main/")
-        self.assertEqual(runner.worktree_dir("/vllm-workspace", "t1"), "/vllm-workspace/t1/")
-
-    def test_invalid_worktree_raises(self):
-        for bad in ("", ".", "..", "a/b", "a\\b"):
-            with self.assertRaises(config.RemotePluginError):
-                runner.worktree_dir("/ws", bad)
-
-
 class TestRunForeground(_Base):
     """spec T3 e2e 步骤2：fake ssh 前台截断预览（>4000 字符 head/tail）。"""
 
@@ -76,12 +65,12 @@ class TestRunForeground(_Base):
         out = b"__RP_PID__=4242\n" + b"x" * 5000
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=out,
                                                               stderr=b"y" * 123)):
-            job = runner.run_remote(self.machine, "main", "echo hi", None, {}, None,
+            job = runner.run_remote(self.machine, "echo hi", None, {}, None,
                                     None, 600, False)
         self.assertEqual(job.status, "done")
         self.assertEqual(job.exit_code, 0)
         self.assertEqual(job.remote_pid, 4242)
-        self.assertEqual(job.cwd, "/ws/main/")
+        self.assertEqual(job.cwd, "/ws")
         self.assertEqual(job.stdout_log, f"state/jobs/{job.job_id}/stdout.log")
         d = self.state / "jobs" / job.job_id
         self.assertEqual((d / "stdout.log").read_bytes(), b"x" * 5000)  # 标记行已剥离
@@ -97,7 +86,7 @@ class TestRunForeground(_Base):
 
     def test_nonzero_exit_failed(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=3, stdout=b"__RP_PID__=9\nboom\n")):
-            job = runner.run_remote(self.machine, "main", "false", None, {}, None, None, 600, False)
+            job = runner.run_remote(self.machine, "false", None, {}, None, None, 600, False)
         self.assertEqual(job.status, "failed")
         self.assertEqual(job.exit_code, 3)
         d = self.state / "jobs" / job.job_id
@@ -112,7 +101,7 @@ class TestRunForeground(_Base):
             return subprocess.CompletedProcess([], 0, b"", b"")  # cleanup 调用
 
         with mock.patch.object(ssh, "ssh_run", side_effect=fake) as f:
-            job = runner.run_remote(self.machine, "main", "sleep 60", None, {}, None,
+            job = runner.run_remote(self.machine, "sleep 60", None, {}, None,
                                     None, 600, False)
         self.assertEqual(job.status, "timeout")
         self.assertEqual(job.exit_code, 124)
@@ -123,13 +112,13 @@ class TestRunForeground(_Base):
 
     def test_ssh_error_failed(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(error=ssh.SSHError("连接失败"))):
-            job = runner.run_remote(self.machine, "main", "x", None, {}, None, None, 600, False)
+            job = runner.run_remote(self.machine, "x", None, {}, None, None, 600, False)
         self.assertEqual(job.status, "failed")
         self.assertIsNone(job.exit_code)
 
     def test_explicit_cwd_and_env_cards(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=1\n")):
-            job = runner.run_remote(self.machine, "main", "pwd", "/custom/dir",
+            job = runner.run_remote(self.machine, "pwd", "/custom/dir",
                                     {"ASCEND_RT_VISIBLE_DEVICES": "0,1"}, None, None, 600, False)
         self.assertEqual(job.cwd, "/custom/dir")
         self.assertEqual(job.cards, [0, 1])
@@ -139,11 +128,11 @@ class TestRunBackground(_Base):
     def test_returns_immediately_with_pid(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=777\n")), \
                 mock.patch.object(runner, "_spawn_streamer", return_value=None) as spawn:
-            job = runner.run_remote(self.machine, "t1", "sleep 600", None, {}, None,
+            job = runner.run_remote(self.machine, "sleep 600", None, {}, None,
                                     "占坑", 600, True)
         self.assertEqual(job.status, "running")
         self.assertEqual(job.remote_pid, 777)
-        self.assertEqual(job.cwd, "/ws/t1/")
+        self.assertEqual(job.cwd, "/ws")
         self.assertEqual(job.remote_log_dir, f"/ws/.remote-logs/{job.job_id}")
         self.assertEqual(spawn.call_count, 2)
         meta = json.loads((self.state / "jobs" / job.job_id / "meta.json").read_text())
@@ -155,14 +144,14 @@ class TestRunBackground(_Base):
     def test_launch_failure_marks_failed(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=1, stdout=b"")), \
                 mock.patch.object(runner, "_spawn_streamer", return_value=None):
-            job = runner.run_remote(self.machine, "main", "x", None, {}, None, None, 600, True)
+            job = runner.run_remote(self.machine, "x", None, {}, None, None, 600, True)
         self.assertEqual(job.status, "failed")
         self.assertIsNotNone(job.finished_at)
 
     def test_unreachable_marks_failed(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(error=ssh.SSHError("不可达"))), \
                 mock.patch.object(runner, "_spawn_streamer", return_value=None):
-            job = runner.run_remote(self.machine, "main", "x", None, {}, None, None, 600, True)
+            job = runner.run_remote(self.machine, "x", None, {}, None, None, 600, True)
         self.assertEqual(job.status, "failed")
 
 
@@ -203,14 +192,14 @@ class TestLauncherLocal(unittest.TestCase):
 
 class TestCliRun(_Base):
     def test_unknown_alias_raises(self):
-        args = mock.Mock(alias="nope", worktree="main", cmd="x", cwd=None, env={},
+        args = mock.Mock(alias="nope", cmd="x", cwd=None, env={},
                          cards=None, task=None, timeout=600, background=False)
         with mock.patch.object(config, "load_machines", return_value={"m1": self.machine}):
             with self.assertRaises(config.ConfigError):
                 runner.cli_run(args)
 
     def test_cli_run_payload(self):
-        args = mock.Mock(alias="m1", worktree="main", cmd="echo hi", cwd=None, env={},
+        args = mock.Mock(alias="m1", cmd="echo hi", cwd=None, env={},
                          cards=None, task="t", timeout=600, background=False)
         with mock.patch.object(config, "load_machines", return_value={"m1": self.machine}), \
                 mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=5\nhi\n")):

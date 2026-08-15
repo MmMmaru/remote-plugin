@@ -26,8 +26,8 @@ cp skills/remote-plugin/SKILL.md .claude/skills/remote-plugin/SKILL.md
 ```bash
 # agent 经 Bash 工具执行：先查占用，再同步，再后台编译
 ./remote machines
-./remote sync 192.168.9.166 --worktree main
-./remote run 192.168.9.166 --worktree main --background --task "编译验证" --cards 0,1 \
+./remote sync 192.168.9.166
+./remote run 192.168.9.166 --background --task "编译验证" --cards 0,1 \
   --cmd "pip install --no-deps -e . --no-build-isolation" --timeout 3600
 ```
 

@@ -4,7 +4,7 @@
 二进制流回本地，本地 GNU tar 解包到 ``--dest``；远端先出 sha256 清单，本地
 解包后重算比对，不一致 fail closed（``PullError`` → 单行 JSON、exit=1）。
 
-- 相对路径按 worktree 目录（``<workspace_root>/<worktree>``）解析；绝对路径
+- 相对路径按 workspace_root 解析；绝对路径
   视为容器内路径原样使用。多路径打进同一个 tar（base 取公共前缀）。
 - 本地 tar 经 ``localtools.gnu_tar()`` 解析（Windows 上规避 System32 bsdtar）。
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import config, output, ssh
 from .localtools import gnu_tar, tar_path
-from .sync_paths import _local_sha256, _parse_sha256_output, _shq, _validate_worktree
+from .sync_paths import _local_sha256, _parse_sha256_output, _shq
 
 __all__ = ["PullResult", "PullError", "pull_paths"]
 
@@ -48,18 +48,18 @@ class PullResult:
 
 
 def _resolve_remote_paths(
-    workspace_root: str, worktree: str, remote_paths: list[str]
+    workspace_root: str, remote_paths: list[str]
 ) -> tuple[str, list[str]]:
     """校验并归一化远端路径 → ``(tar 基准目录 base, 相对 base 的 rel 列表)``。
 
-    - 相对路径按 worktree 目录解析，normpath 后逃出 worktree（如 ``../x``）→ 越界；
+    - 相对路径按 workspace_root 解析，normpath 后逃出 workspace（如 ``../x``）→ 越界；
     - 绝对路径（容器内）原样使用；
     - 多路径打进同一个 tar：base 取全部解析结果的公共前缀；单一路径取其
       dirname（拉回内容保留最后一级目录名）。
     """
     if not remote_paths:
         raise PullError("remote_path 不能为空（至少指定一个文件或目录）")
-    wt = f"{workspace_root.rstrip('/')}/{worktree}"
+    wt = workspace_root.rstrip("/") or "/"
     resolved: list[str] = []
     seen: set[str] = set()
     for raw in remote_paths:
@@ -73,7 +73,7 @@ def _resolve_remote_paths(
         else:
             res = posixpath.normpath(f"{wt}/{p}")
             if res != wt and not res.startswith(wt + "/"):
-                raise PullError(f"remote_path 越界（必须位于 worktree 内）: {p!r}")
+                raise PullError(f"remote_path 越界（必须位于 workspace_root 内）: {p!r}")
         if res in seen:
             continue
         seen.add(res)
@@ -105,7 +105,6 @@ def _tar_script(base: str, rels: list[str]) -> str:
 
 def pull_paths(
     machine: config.Machine,
-    worktree: str,
     remote_paths: list[str],
     dest: Path | str,
 ) -> PullResult:
@@ -115,11 +114,8 @@ def pull_paths(
       （CLI 层转单行 JSON、exit=1，fail closed）；
     - 成功返回 ``PullResult(status="ready", files, bytes, dest)``。
     """
-    _validate_worktree(worktree)
     endpoint = config.resolve_endpoint(machine, config.state_dir())
-    base, rels = _resolve_remote_paths(
-        endpoint.workspace_root, worktree, list(remote_paths)
-    )
+    base, rels = _resolve_remote_paths(endpoint.workspace_root, list(remote_paths))
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -176,5 +172,5 @@ def cli_pull(args) -> dict:
         raise config.ConfigError(
             f"机器 '{args.alias}' 未注册（machines.json 中不存在该机器）"
         )
-    result = pull_paths(machine, args.worktree, args.remote_paths, args.dest)
+    result = pull_paths(machine, args.remote_paths, args.dest)
     return result.to_dict()

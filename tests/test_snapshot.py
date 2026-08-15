@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from remote_plugin import snapshot
+from remote_plugin import snapshot, workspace
 from remote_plugin.snapshot import SnapshotError
 
 
@@ -193,6 +193,39 @@ class TestBuildSnapshots(_TempDir):
         _git(root_repo, "commit", "-qm", "c")
         with self.assertRaises(SnapshotError):
             snapshot.build_snapshots(root_repo)
+
+    def test_registered_workspace_worktree_is_synthetic_child(self):
+        """workspace 内 registered worktree 作为独立 repo 节点参与 snapshot。"""
+        root_repo = self.root / "workspace"
+        _make_repo(root_repo)
+        (root_repo / ".gitignore").write_text(".worktrees/\n", encoding="utf-8")
+        _commit_all(root_repo, "ignore worktrees")
+
+        owner = root_repo / "vllm-seu"
+        _make_repo(owner)
+        (owner / "owner.txt").write_text("owner\n", encoding="utf-8")
+        _commit_all(owner, "owner")
+        worktree = root_repo / ".worktrees" / "vllm-seu-feature"
+        _git(owner, "worktree", "add", "-b", "feature", str(worktree))
+        (worktree / "feature.txt").write_text("feature\n", encoding="utf-8")
+
+        contexts = workspace.discover_repositories(root_repo)
+        extras = [
+            (context.path, context.relpath)
+            for context in contexts
+            if context.path != root_repo.resolve()
+        ]
+        snapshots = snapshot.build_snapshots(root_repo, extras)
+
+        self.assertEqual(snapshots.repos[-1].relpath, ".")
+        self.assertEqual(
+            {record.relpath for record in snapshots.repos},
+            {"vllm-seu", ".worktrees/vllm-seu-feature", "."},
+        )
+        for relpath in ("vllm-seu", ".worktrees/vllm-seu-feature"):
+            fields = _git(root_repo, "ls-tree", snapshots.root.commit, "--", relpath).stdout.split()
+            self.assertEqual(fields[0], "160000")
+            self.assertEqual(fields[2], snapshots.by_relpath[relpath].commit)
 
 
 if __name__ == "__main__":

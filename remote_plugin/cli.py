@@ -79,7 +79,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="远程执行命令")
     p.add_argument("alias")
     p.add_argument("--cmd", required=True, help="要执行的命令")
-    p.add_argument("--worktree", default="main")
     p.add_argument("--cwd", default=None)
     p.add_argument("--env", action="append", metavar="K=V", default=[], help="环境变量，可重复")
     p.add_argument("--cards", type=_parse_cards, default=None, help="占用卡号，如 0,1")
@@ -99,16 +98,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("stop", help="停止任务")
     p.add_argument("job_id")
 
-    p = sub.add_parser("sync", help="代码同步（默认 git 递归整树，--paths 指定路径）")
+    p = sub.add_parser("sync", help="同步整个 workspace（--paths 指定路径）")
     p.add_argument("alias")
-    p.add_argument("--worktree", default="main")
     p.add_argument("--paths", nargs="*", default=None, help="指定文件/路径（方法 B）")
 
     p = sub.add_parser("pull", help="从远端拉回文件/目录到本地（产物下载）")
     p.add_argument("alias")
-    p.add_argument("remote_paths", nargs="+", help="远端文件/目录（相对 worktree 或容器内绝对路径）")
+    p.add_argument("remote_paths", nargs="+", help="远端文件/目录（相对 workspace_root 或容器内绝对路径）")
     p.add_argument("--dest", required=True, help="本地落点目录")
-    p.add_argument("--worktree", default="main")
 
     return parser
 

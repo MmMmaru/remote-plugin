@@ -1,6 +1,6 @@
 """T3：远程执行（run）。
 
-纯标准库 + 系统 ssh。默认 cwd=worktree 目录；前台返回截断预览
+纯标准库 + 系统 ssh。默认 cwd=workspace_root；前台返回截断预览
 （head/tail 各 4000 字符）+ exit_code + 日志路径；``--background`` 立即返回。
 日志全文落盘本地 ``state/jobs/<job_id>/``，后台任务由常驻 streamer 持续同步。
 """
@@ -21,7 +21,7 @@ QUICK_SSH_TIMEOUT_SEC = 60
 CLEANUP_TIMEOUT_SEC = 30
 DEFAULT_TIMEOUT_SEC = 600
 
-#: 远端日志暂存目录（workspace_root 下，与 worktree 平行；PRD 7 的 state/ 在本地）
+#: 远端日志暂存目录（workspace_root 下；PRD 7 的 state/ 在本地）
 _REMOTE_LOG_ROOT = ".remote-logs"
 
 
@@ -30,17 +30,6 @@ def preview_text(text: str, limit: int = PREVIEW_LIMIT) -> dict:
     if len(text) <= limit:
         return {"head": text, "tail": "", "truncated": False}
     return {"head": text[:limit], "tail": text[-limit:], "truncated": True}
-
-
-def worktree_dir(workspace_root: str, worktree: str) -> str:
-    """worktree 目录（PRD 2.3）：main → ``<root>/main/``，其余 → ``<root>/<id>/``。"""
-    _validate_worktree(worktree)
-    return f"{workspace_root.rstrip('/')}/{worktree}/"
-
-
-def _validate_worktree(worktree: str) -> None:
-    if not worktree or worktree in (".", "..") or "/" in worktree or "\\" in worktree:
-        raise _config.RemotePluginError(f"非法 worktree id: {worktree!r}")
 
 
 def _cards_from_env(env: dict) -> list[int] | None:
@@ -269,14 +258,14 @@ def _occupancy(j: _jobs.Job) -> dict:
     }
 
 
-def run_remote(machine: _config.Machine, worktree: str = "main", command: str = "",
+def run_remote(machine: _config.Machine, command: str = "",
                cwd: str | None = None, env: dict | None = None,
                cards: list[int] | None = None, task: str | None = None,
                timeout_sec: int = DEFAULT_TIMEOUT_SEC,
                background: bool = False) -> _jobs.Job:
     """远程执行命令（PRD 5.1）。
 
-    默认 cwd=worktree 目录；stdout/stderr 落盘 ``state/jobs/<job_id>/``；
+    默认 cwd=workspace_root；stdout/stderr 落盘 ``state/jobs/<job_id>/``；
     前台返回截断预览 + exit_code + 日志路径，``--background`` 立即返回。
     返回的 Job 附 ``stdout_preview``/``stderr_preview``/``running``（占用提示，advisory）。
     """
@@ -284,7 +273,7 @@ def run_remote(machine: _config.Machine, worktree: str = "main", command: str = 
     if cards is None:
         cards = _cards_from_env(env)
     ws = machine.effective_workspace_root()
-    cwd = worktree_dir(ws, worktree) if cwd is None else cwd
+    cwd = ws if cwd is None else cwd
     job_id = _fresh_job_id()
     job = _jobs.Job(
         job_id=job_id,
@@ -292,7 +281,6 @@ def run_remote(machine: _config.Machine, worktree: str = "main", command: str = 
         cards=cards,
         owner=_jobs.default_owner(),
         task=task,
-        worktree=worktree,
         command=command,
         cwd=cwd,
         status="running",
@@ -318,7 +306,7 @@ def cli_run(args) -> dict:
         raise _config.ConfigError(
             f"未知机器 alias: {args.alias!r}（可用: {', '.join(sorted(machines)) or '无'}）"
         )
-    job = run_remote(machine, args.worktree, args.cmd, args.cwd, args.env,
+    job = run_remote(machine, args.cmd, args.cwd, args.env,
                      args.cards, args.task, args.timeout, args.background)
     payload = job.as_dict()
     payload["stdout_preview"] = getattr(job, "stdout_preview",

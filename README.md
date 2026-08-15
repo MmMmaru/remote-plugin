@@ -39,19 +39,31 @@ remote-plugin 仓库自身的 `.remote/state`（`remote` 入口脚本所在目�
 ### 2. 代码同步
 
 ```bash
-./remote sync <alias> [--worktree <id>]          # 方法A：git 递归整树（字节级一致）
-./remote sync <alias> --paths src/a.py tests/ [--worktree <id>]  # 方法B：指定路径热修补
-./remote pull <alias> <remote_path>... --dest <dir> [--worktree <id>]  # 从远端拉回文件/目录（profiling/benchmark 产物下载，sha256 校验）
+./remote sync <alias>                            # 方法A：整个 workspace git 递归同步
+./remote sync <alias> --paths src/a.py tests/    # 方法B：workspace 内指定路径热修补
+./remote pull <alias> <remote_path>... --dest <dir>  # 从 workspace 拉回产物（sha256 校验）
 ```
 
 ### 3. 远程执行与日志
 
 ```bash
-./remote run <alias> --cmd "..." [--worktree <id>] [--cwd <path>] [--env K=V] \
+./remote run <alias> --cmd "..." [--cwd <path>] [--env K=V] \
              [--cards 0,1] [--task "编译"] [--timeout 600] [--background]
 ./remote jobs [--machine <alias>]   # 任务列表（含 stale 标记）
 ./remote logs <job-id> [--tail 200] [--stderr]
 ./remote stop <job-id>
+```
+
+`sync` 默认从当前目录定位 workspace（优先取最近的 `.remote` 根目录），直接同步到远端
+`workspace_root`，不再创建或选择 `main` 目录。快照会递归发现 workspace 内的 Git 仓库，
+并纳入各仓库通过 `git worktree` 注册且位于 workspace 内的 worktree；普通目录仍遵循所属
+仓库的 `.gitignore` 规则。
+
+例如将 `vllm-seu` 的分支 worktree 放在 workspace 内：
+
+```bash
+git -C vllm-seu worktree add -b feature .worktrees/vllm-seu-feature
+./remote sync <alias>
 ```
 
 ## 快速示例
@@ -61,8 +73,8 @@ remote-plugin 仓库自身的 `.remote/state`（`remote` 入口脚本所在目�
 ./remote machines
 
 # 同步代码到机器，再后台编译（显式声明占用）
-./remote sync 192.168.9.166 --worktree main
-./remote run 192.168.9.166 --worktree main --background --task "编译验证" --cards 0,1 \
+./remote sync 192.168.9.166
+./remote run 192.168.9.166 --background --task "编译验证" --cards 0,1 \
     --cmd "pip install --no-deps -e . --no-build-isolation" --timeout 3600
 ./remote logs <job-id> --tail 200
 ```

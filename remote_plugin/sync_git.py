@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from . import config, output, snapshot, ssh
+from . import config, output, snapshot, ssh, workspace
 from .config import Machine, RemotePluginError
 
 _SHA256_SAMPLE_LIMIT = 5  # sha256 抽检文件数上限
@@ -70,9 +70,9 @@ def _repo_id(relpath: str) -> str:
     return "root" if relpath in ("", ".") else relpath
 
 
-def _worktree_dir(ws: str, worktree: str) -> PurePosixPath:
-    """PRD 2.3：worktree 目录直接建在 workspace_root 下。"""
-    return PurePosixPath(ws) / worktree
+def _repo_dir(ws: str, relpath: str) -> PurePosixPath:
+    """返回 workspace 中某个 repo/worktree 的远端目录。"""
+    return PurePosixPath(ws) if relpath in ("", ".") else PurePosixPath(ws) / relpath
 
 
 def _mirror_path(ws: str, relpath: str) -> str:
@@ -86,19 +86,18 @@ def _bundle_tmp(ws: str, relpath: str, commit: str) -> str:
     return str(PurePosixPath(ws) / ".remote-mirrors" / ".bundles" / f"{rid}-{commit}.bundle")
 
 
-def _parity_ref(worktree: str, relpath: str) -> str:
-    """mirror 内 parity ref：`refs/parity/<worktree>/<id>`。"""
-    wt = _sanitize_ref_part(worktree)
+def _parity_ref(relpath: str) -> str:
+    """workspace mirror 内 parity ref。"""
     rid = _sanitize_ref_part(_repo_id(relpath))
-    return f"refs/parity/{wt}/{rid}"
+    return f"refs/parity/workspace/{rid}"
 
 
-def _last_state_path(state_dir: Path, alias: str, worktree: str) -> Path:
-    return Path(state_dir) / "sync" / alias / f"{_sanitize_ref_part(worktree)}.json"
+def _last_state_path(state_dir: Path, alias: str) -> Path:
+    return Path(state_dir) / "sync" / alias / "workspace.json"
 
 
-def _load_last_state(state_dir: Path, alias: str, worktree: str) -> dict[str, Any] | None:
-    path = _last_state_path(state_dir, alias, worktree)
+def _load_last_state(state_dir: Path, alias: str) -> dict[str, Any] | None:
+    path = _last_state_path(state_dir, alias)
     if not path.is_file():
         return None
     try:
@@ -109,9 +108,9 @@ def _load_last_state(state_dir: Path, alias: str, worktree: str) -> dict[str, An
 
 
 def _save_last_state(
-    state_dir: Path, alias: str, worktree: str, commits: dict[str, str]
+    state_dir: Path, alias: str, commits: dict[str, str]
 ) -> None:
-    path = _last_state_path(state_dir, alias, worktree)
+    path = _last_state_path(state_dir, alias)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"snapshot_commits": commits}
     path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -139,15 +138,13 @@ def _ensure_up(machine: Machine, endpoint: config.Endpoint, state_dir: Path) -> 
     return "need up"
 
 
-def _push_bundles(
-    endpoint: config.Endpoint, worktree: str, snapshots: snapshot.SnapshotSet
-) -> None:
+def _push_bundles(endpoint: config.Endpoint, snapshots: snapshot.SnapshotSet) -> None:
     """每 repo 的 snapshot commit 打 bundle，经 ssh 二进制流送入容器 mirror。"""
     ws = endpoint.workspace_root
     for rec in snapshots.repos:
         mirror = _mirror_path(ws, rec.relpath)
         bundle = _bundle_tmp(ws, rec.relpath, rec.commit)
-        ref = f"refs/remote-plugin/sync/{_sanitize_ref_part(worktree)}/{_sanitize_ref_part(_repo_id(rec.relpath))}"
+        ref = f"refs/remote-plugin/sync/workspace/{_sanitize_ref_part(_repo_id(rec.relpath))}"
         # bundle 需要 ref 作为 tip（裸 sha 会被 git 拒绝）
         subprocess.run(
             ["git", "-C", str(rec.repo), "update-ref", ref, rec.commit],
@@ -164,7 +161,7 @@ def _push_bundles(
                 f"if [ ! -d {shlex.quote(mirror)} ]; then git init --bare {shlex.quote(mirror)} >/dev/null; fi; "
                 f"cat > {shlex.quote(bundle)}; "
                 f"git -C {shlex.quote(mirror)} fetch --force {shlex.quote(bundle)} "
-                f"{shlex.quote(rec.commit + ':' + _parity_ref(worktree, rec.relpath))} >/dev/null; "
+                f"{shlex.quote(rec.commit + ':' + _parity_ref(rec.relpath))} >/dev/null; "
                 f"rm -f {shlex.quote(bundle)}"
             )
             local_cmd = ["git", "-C", str(rec.repo), "bundle", "create", "-", ref]
@@ -177,23 +174,20 @@ def _push_bundles(
             )
 
 
-def _materialize(
-    endpoint: config.Endpoint, worktree: str, snapshots: snapshot.SnapshotSet
-) -> None:
-    """远端 worktree 对齐 snapshot；子模块 URL 改写为 mirror，递归展开。"""
+def _materialize(endpoint: config.Endpoint, snapshots: snapshot.SnapshotSet) -> None:
+    """把 workspace 中各 repo 对齐 snapshot；递归展开子模块和 worktree。"""
     ws = endpoint.workspace_root
     by_rel = snapshots.by_relpath
-    lines: list[str] = ["set -e", f"mkdir -p {shlex.quote(str(_worktree_dir(ws, worktree)))}"]
+    lines: list[str] = ["set -e", f"mkdir -p {shlex.quote(ws)}"]
 
     def repo_dir(rec: snapshot.RepoSnapshot) -> PurePosixPath:
-        base = _worktree_dir(ws, worktree)
-        return base if rec.relpath in ("", ".") else base / rec.relpath
+        return _repo_dir(ws, rec.relpath)
 
     def render(rec: snapshot.RepoSnapshot) -> list[str]:
         rd = repo_dir(rec)
         is_root = rec.relpath in ("", ".")
         mirror = _mirror_path(ws, rec.relpath)
-        parity = _parity_ref(worktree, rec.relpath)
+        parity = _parity_ref(rec.relpath)
         # 根仓库目录是 worktree 本体，绝不整目录删除；子模块目录可整体重建
         if is_root:
             init_cmd = (
@@ -215,8 +209,25 @@ def _materialize(
             f"{shlex.quote(parity + ':refs/remotes/parity/current')} >/dev/null",
             f"git -C {shlex.quote(str(rd))} checkout -f -B parity/current refs/remotes/parity/current >/dev/null",
             f"git -C {shlex.quote(str(rd))} reset --hard refs/remotes/parity/current >/dev/null",
-            f"git -C {shlex.quote(str(rd))} clean -ffd >/dev/null",
+            # mirror 与任务日志位于 workspace 根目录，不能被根仓库 clean 清掉。
+            (
+                f"git -C {shlex.quote(str(rd))} clean -ffd"
+                " -e .remote-mirrors -e .remote-logs >/dev/null"
+            ),
         ]
+        if is_root:
+            # 运行时 mirror/log 目录位于 workspace 根下；加入该仓库本地 exclude，
+            # 这样旧的 dirty=0 校验不会把同步基础设施误判为代码改动。
+            out.extend(
+                [
+                    f"git_dir=$(git -C {shlex.quote(str(rd))} rev-parse --absolute-git-dir)",
+                    'mkdir -p "$git_dir/info"',
+                    'for runtime_dir in .remote-mirrors .remote-logs; do '
+                    'grep -Fqx "$runtime_dir/" "$git_dir/info/exclude" 2>/dev/null '
+                    '|| printf "%s\\n" "$runtime_dir/" >> "$git_dir/info/exclude"; '
+                    'done',
+                ]
+            )
         # 子模块 URL 改写为容器内 mirror（只写 .git/config，不动 .gitmodules）
         for sub in rec.submodules:
             child = by_rel[_child_relpath(rec.relpath, sub["path"])]
@@ -271,16 +282,15 @@ def _sample_files(
 
 def _verify_remote(
     endpoint: config.Endpoint,
-    worktree: str,
     snapshots: snapshot.SnapshotSet,
     sample: list[tuple[str, Path]],
 ) -> tuple[bool, dict[str, str]]:
     """单次 SSH：校验远端各 repo HEAD == snapshot commit，并 sha256 抽检。"""
     ws = endpoint.workspace_root
-    base = _worktree_dir(ws, worktree)
+    base = PurePosixPath(ws)
     lines: list[str] = ["set -e"]
     for rec in snapshots.repos:
-        rd = base if rec.relpath in ("", ".") else base / rec.relpath
+        rd = _repo_dir(ws, rec.relpath)
         lines.append(
             f"printf 'HEAD\\t'; printf '%s\\t' {shlex.quote(rec.relpath)}; "
             f"git -C {shlex.quote(str(rd))} rev-parse HEAD"
@@ -327,7 +337,7 @@ def _verify_remote(
     return ok, heads
 
 
-def sync_git(machine: Machine, worktree: str, local_root: Path) -> SyncResult:
+def sync_git(machine: Machine, local_root: Path) -> SyncResult:
     """方法 A 同步：bundle → ssh 二进制流 → mirror → materialize → 校验。
 
     返回 ``SyncResult``；transport/SSH 异常抛 ``SSHError``（fail closed），
@@ -343,44 +353,50 @@ def sync_git(machine: Machine, worktree: str, local_root: Path) -> SyncResult:
         return SyncResult("blocked", {}, {}, [], reason=reason)
 
     output.progress({"phase": "snapshot-build"})
-    snapshots = snapshot.build_snapshots(local_root)
+    contexts = workspace.discover_repositories(local_root)
+    extras = [
+        (context.path, context.relpath)
+        for context in contexts
+        if context.path != local_root
+    ]
+    snapshots = snapshot.build_snapshots(local_root, extras)
     commits = snapshots.snapshot_commits()
 
-    last = _load_last_state(state_dir, machine.alias, worktree)
+    last = _load_last_state(state_dir, machine.alias)
     if last is not None and last.get("snapshot_commits") == commits:
         # no-change 快路径：snapshot 与上次一致 → 单次 SSH 校验
         output.progress({"phase": "no-change-check"})
-        ok, heads = _verify_remote(endpoint, worktree, snapshots, [])
+        ok, heads = _verify_remote(endpoint, snapshots, [])
         if ok:
             output.progress({"phase": "no-change"})
             return SyncResult("no_change", commits, heads, [])
         output.progress({"phase": "full-sync"})
 
     output.progress({"phase": "bundle-push"})
-    _push_bundles(endpoint, worktree, snapshots)
+    _push_bundles(endpoint, snapshots)
     output.progress({"phase": "materialize"})
-    _materialize(endpoint, worktree, snapshots)
+    _materialize(endpoint, snapshots)
     output.progress({"phase": "verify"})
 
     sample = _sample_files(snapshots, local_root)
-    ok, heads = _verify_remote(endpoint, worktree, snapshots, sample)
+    ok, heads = _verify_remote(endpoint, snapshots, sample)
     if not ok:
         return SyncResult(
             "failed",
             commits,
             heads,
             snapshots.aggregate_changed_paths(),
-            reason="远端 commit/manifest 与 snapshot 不一致，fail closed",
+            reason="远端 commit/dirty/sha256 与 snapshot 不一致，fail closed",
         )
 
-    _save_last_state(state_dir, machine.alias, worktree, commits)
+    _save_last_state(state_dir, machine.alias, commits)
     output.progress({"phase": "ready"})
     return SyncResult("ready", commits, heads, snapshots.aggregate_changed_paths())
 
 
 def cli_sync(args: Any) -> dict[str, Any]:
     """sync 子命令 handler：`--paths` 非空走方法 B，否则方法 A。"""
-    local_root = _repo_root(Path.cwd())
+    local_root = workspace.find_workspace_root(Path.cwd())
     machines = config.load_machines()
     if args.alias not in machines:
         raise config.ConfigError(f"未知机器 alias: {args.alias}")
@@ -395,12 +411,12 @@ def cli_sync(args: Any) -> dict[str, Any]:
         if sync_paths_mod is None:
             raise RemotePluginError("sync_paths（方法 B）尚未实现")
         paths = [Path(p) for p in args.paths]
-        result = sync_paths_mod.sync_paths(machine, args.worktree, paths, local_root)
+        result = sync_paths_mod.sync_paths(machine, paths, local_root)
         if isinstance(result, dict):
             return result
         if hasattr(result, "to_dict"):
             return result.to_dict()
         return {"status": "ready", "result": result}
 
-    result = sync_git(machine, args.worktree, local_root)
+    result = sync_git(machine, local_root)
     return result.to_dict()

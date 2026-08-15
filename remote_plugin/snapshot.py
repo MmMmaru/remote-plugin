@@ -145,11 +145,16 @@ class _RepoNode:
     submodule_names: dict[str, str] = field(default_factory=dict)  # path -> name
 
 
-def _discover_tree(repo: Path, relpath: str = ".") -> _RepoNode:
-    """递归发现仓库树；子模块未初始化/非工作树 → fail closed。"""
+def _discover_tree(
+    repo: Path,
+    relpath: str = ".",
+    extra_repositories: list[tuple[Path, str]] | None = None,
+) -> _RepoNode:
+    """递归发现 submodule 与 workspace 中的独立仓库/worktree。"""
     if not (repo / ".git").exists():
         raise SnapshotError(f"目录不是 git 工作树: {repo}")
     node = _RepoNode(relpath=relpath, repo=repo)
+    child_paths: set[Path] = set()
     for name, path in _list_submodules(repo):
         child_repo = repo / path
         child_relpath = path if relpath in ("", ".") else f"{relpath}/{path}"
@@ -159,7 +164,41 @@ def _discover_tree(repo: Path, relpath: str = ".") -> _RepoNode:
                 "（请先 git submodule update --init --recursive）"
             )
         node.submodule_names[path] = name
-        node.children.append(_discover_tree(child_repo, child_relpath))
+        child_paths.add(child_repo.resolve())
+        node.children.append(
+            _discover_tree(child_repo, child_relpath, extra_repositories)
+        )
+
+    # 额外仓库按最近祖先挂载：root/vllm-seu/.worktrees/x 由 vllm-seu
+    # 节点展开，不会被重复挂到 root 节点。
+    candidates: list[tuple[Path, str]] = []
+    for child_repo, child_relpath in extra_repositories or []:
+        child_repo = Path(child_repo).resolve()
+        if child_repo == repo.resolve() or child_repo in child_paths:
+            continue
+        try:
+            child_repo.relative_to(repo.resolve())
+        except ValueError:
+            continue
+        candidates.append((child_repo, child_relpath))
+    for child_repo, child_relpath in sorted(
+        candidates, key=lambda item: (len(item[0].parts), str(item[0]))
+    ):
+        if any(
+            child_repo != parent and child_repo.is_relative_to(parent)
+            for parent in child_paths
+        ):
+            continue
+        relative = child_repo.relative_to(repo.resolve()).as_posix()
+        if relative in node.submodule_names:
+            continue
+        if not (child_repo / ".git").exists():
+            raise SnapshotError(f"发现的 Git worktree 不可用: {child_repo}")
+        child_paths.add(child_repo)
+        node.submodule_names[relative] = relative
+        node.children.append(
+            _discover_tree(child_repo, child_relpath, extra_repositories)
+        )
     return node
 
 
@@ -271,7 +310,10 @@ def _build_snapshot(
             pass
 
 
-def build_snapshots(local_root: Path) -> SnapshotSet:
+def build_snapshots(
+    local_root: Path,
+    extra_repositories: list[tuple[Path, str]] | None = None,
+) -> SnapshotSet:
     """postorder 递归为 local_root 整树构造 synthetic snapshots。
 
     - 叶子 submodule → 父 submodule → 根仓库；
@@ -282,7 +324,7 @@ def build_snapshots(local_root: Path) -> SnapshotSet:
     local_root = Path(local_root).resolve()
     if not (local_root / ".git").exists():
         raise SnapshotError(f"不是 git 工作树: {local_root}")
-    tree = _discover_tree(local_root)
+    tree = _discover_tree(local_root, extra_repositories=extra_repositories)
     child_commits: dict[str, RepoSnapshot] = {}
     repos: list[RepoSnapshot] = []
     for node in _iter_postorder(tree):

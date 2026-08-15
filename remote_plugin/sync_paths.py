@@ -1,11 +1,11 @@
-"""T4 sync 方法 B：指定文件/路径经 `tar | ssh` 二进制流覆盖到远端 worktree。
+"""T4 sync 方法 B：指定文件/路径经 `tar | ssh` 二进制流覆盖到 workspace。
 
 - 本地 ``tar -C <local_root> -cf - -- <rel paths>`` 打包（保留相对结构），经
-  ``ssh_pipe`` 二进制流送入远端 ``mkdir -p <worktree> && tar -x -C <worktree>``；
+  ``ssh_pipe`` 二进制流送入远端 workspace_root；
   tar 是二进制流，行尾不被改写（CRLF 验收项）。
 - 传输后 sha256 抽检：本地对每个常规文件算 sha256，远端用 ``sha256sum`` 比对，
   全部一致才 ``status: ready``。
-- 错误语义：输入校验（空列表 / 越界 / 不存在 / worktree 非法）抛
+- 错误语义：输入校验（空列表 / 越界 / 不存在）抛
   ``SyncPathsError``；传输或远端执行失败抛 ``ssh.SSHError``（fail closed）；
   仅当传输成功但抽检不一致时返回 ``status: failed``（不抛异常）。
 
@@ -27,7 +27,7 @@ _CHUNK = 1024 * 1024
 
 
 class SyncPathsError(config.RemotePluginError):
-    """sync 方法 B 的输入校验错误（空列表 / 越界 / 不存在 / worktree 非法）。"""
+    """sync 方法 B 的输入校验错误（空列表 / 越界 / 不存在）。"""
 
 
 @dataclass
@@ -52,17 +52,6 @@ class SyncResult:
 def _shq(s: str) -> str:
     """POSIX shell 单引号转义（远端命令路径安全引用）。"""
     return "'" + s.replace("'", "'\\''") + "'"
-
-
-def _validate_worktree(worktree: str) -> str:
-    """worktree 必须是简单目录名，防止远端路径穿越（`<workspace_root>/<worktree>`）。"""
-    if not isinstance(worktree, str) or worktree == "":
-        raise SyncPathsError("worktree 不能为空")
-    if "/" in worktree or "\\" in worktree or worktree in (".", ".."):
-        raise SyncPathsError(
-            f"worktree 非法（必须是简单目录名，如 main / t4-test）: {worktree!r}"
-        )
-    return worktree
 
 
 def _resolve_paths(local_root: Path, paths: list[Path]) -> list[Path]:
@@ -148,24 +137,22 @@ def _parse_sha256_output(text: str) -> dict[str, str]:
     return result
 
 
-def _remote_worktree_dir(endpoint: config.Endpoint, worktree: str) -> str:
-    """远端 worktree 目录 = ``workspace_root/<worktree>``（禁止写死绝对路径）。"""
-    return f"{endpoint.workspace_root.rstrip('/')}/{worktree}"
+def _remote_workspace_dir(endpoint: config.Endpoint) -> str:
+    """远端同步根目录，始终来自机器配置。"""
+    return endpoint.workspace_root.rstrip("/") or "/"
 
 
 def sync_paths(
     machine: config.Machine,
-    worktree: str,
     paths: list[Path],
     local_root: Path,
 ) -> SyncResult:
-    """方法 B：把 ``paths``（相对 ``local_root``）经 ``tar | ssh`` 覆盖到远端 worktree。
+    """方法 B：把 ``paths``（相对 ``local_root``）经 ``tar | ssh`` 覆盖到远端 workspace。
 
     - 输入校验失败 → ``SyncPathsError``；
     - 传输/远端执行失败 → ``ssh.SSHError``（fail closed）；
     - 传输成功但 sha256 抽检不一致 → 返回 ``status: failed``。
     """
-    _validate_worktree(worktree)
     rel_paths = _resolve_paths(local_root, paths)
     root = local_root.resolve()
 
@@ -173,16 +160,16 @@ def sync_paths(
     total_bytes = sum(files_map.values())
 
     endpoint = config.resolve_endpoint(machine, config.state_dir())
-    wt_dir = _remote_worktree_dir(endpoint, worktree)
+    workspace_dir = _remote_workspace_dir(endpoint)
 
-    # 1) 本地 tar 打包（保留相对结构、二进制流）→ ssh | tar -x 覆盖到 worktree
+    # 1) 本地 tar 打包（保留相对结构、二进制流）→ ssh | tar -x 覆盖到 workspace
     # tar 经 localtools 解析 GNU 版本（Windows 上裸 "tar" 会命中 System32 bsdtar），
     # 路径转 MSYS 形式（Git tar 不识别反斜杠 Windows 路径）
     local_cmd = [
         gnu_tar(), "-C", tar_path(root), "-cf", "-", "--",
         *[r.as_posix() for r in rel_paths],
     ]
-    remote_cmd = f"mkdir -p {_shq(wt_dir)} && tar -x -C {_shq(wt_dir)}"
+    remote_cmd = f"mkdir -p {_shq(workspace_dir)} && tar -x -C {_shq(workspace_dir)}"
     ssh.ssh_pipe(endpoint, local_cmd, remote_cmd)
 
     # 2) sha256 抽检：本地逐文件算，远端 sha256sum 比对（全部一致才算 ok）
@@ -190,7 +177,7 @@ def sync_paths(
         local_hashes = {rel: _local_sha256(root / rel) for rel in files_map}
         script = (
             "set -e\n"
-            f"cd {_shq(wt_dir)} || exit 1\n"
+            f"cd {_shq(workspace_dir)} || exit 1\n"
             "xargs -0 sha256sum --\n"
         )
         input_bytes = "\0".join(files_map).encode("utf-8") + b"\0"

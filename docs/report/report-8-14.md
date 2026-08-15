@@ -61,12 +61,15 @@
 - 结论：**需要单独的 `remote pull` 子命令**（远端 `tar -cf -` | ssh | 本地 `tar -x`，
   与 sync_paths 同模式的反向二进制流），用于把 profiling/benchmark 产物拉回本地 `.temp/`。
 
-### remote pull 设计（待实施）
+### remote pull 设计（当时记录）
 
-- CLI：`remote pull <alias> <remote_path>... --dest <local_dir> [--worktree <id>]`
-- 远端路径：相对于 worktree 目录解析（也允许容器内绝对路径）；多个路径打同一个 tar。
+- CLI：`remote pull <alias> <remote_path>... --dest <local_dir>`
+- 远端路径：相对于 `workspace_root` 解析（也允许容器内绝对路径）；多个路径打同一个 tar。
 - 传输：远端 `tar -C <base> -cf - -- <rels>` 经 ssh stdout **二进制流**到本地
   `tar -x -C <dest>`（ssh.ssh_pipe 的反向用法，不用 scp/sftp）。
 - 校验：远端先 `sha256sum` 清单，本地解包后重算比对，不一致 fail closed。
 - 输出契约不变：进度 stderr、结果 stdout 单行 JSON `{status, files, bytes, dest}`。
-- 内核函数：`pull_paths(machine, worktree, remote_paths, dest) -> PullResult`。
+- 内核函数：`pull_paths(machine, remote_paths, dest) -> PullResult`。
+
+> 注：本文为 2026-08-14 历史记录；当前实现已删除 `worktree` CLI/API 参数，`sync` 会自动
+> 发现 workspace 内已注册的 Git worktree 并同步到远端 `workspace_root`。
