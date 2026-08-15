@@ -1,9 +1,10 @@
 """T5 方法 A：git 递归同步（bundle → ssh 二进制流 → mirror → materialize → verify）。
 
 流程（PRD 4.1）：
-1. snapshot.build_snapshots 构造 synthetic snapshots；
-2. 每 repo 的 snapshot commit 打成 bundle，经 ssh 二进制流送入容器内
-   mirror（`<workspace_root>/.remote-mirrors/`），fetch 后更新 parity ref；
+1. snapshot.build_snapshots 构造 synthetic snapshots，并复用可用 parent；
+2. 查询远端 parity，未变化 repo 跳过，parent 连续 repo 打 delta bundle，
+   其余 repo 打 full bundle，经 ssh 二进制流送入容器内 mirror
+   （`<workspace_root>/.remote-mirrors/`），fetch 后更新 parity ref；
 3. materialize：worktree 目录内 fetch + 强制对齐到 snapshot ref，子模块
    URL 改写为容器内 mirror，递归显式展开；
 4. 校验容器内各 repo commit id 与 snapshot 完全一致，不符 fail closed；
@@ -19,7 +20,7 @@ import json
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -39,6 +40,9 @@ class SyncResult:
     remote_heads: dict[str, str]  # {relpath: 远端实际 HEAD}
     changed_paths: list[str]
     reason: str | None = None
+    pushed_repos: list[str] = field(default_factory=list)
+    skipped_repos: list[str] = field(default_factory=list)
+    bundle_modes: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -49,7 +53,30 @@ class SyncResult:
         }
         if self.reason:
             data["reason"] = self.reason
+        data["bundle_transfer"] = {
+            "pushed": self.pushed_repos,
+            "skipped": self.skipped_repos,
+            "modes": self.bundle_modes,
+        }
         return data
+
+
+@dataclass(frozen=True)
+class BundlePlan:
+    """单个仓库的传输决策。"""
+
+    mode: str  # skip | delta | full
+    revision: str  # Git bundle 的 revision 或 revision range
+    temporary_ref: str | None = None  # bundle tip 需要临时 ref
+
+
+@dataclass
+class BundlePushResult:
+    """本次 bundle 阶段的仓库级统计。"""
+
+    pushed: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    modes: dict[str, str] = field(default_factory=dict)
 
 
 def _repo_root(start: Path) -> Path:
@@ -62,8 +89,17 @@ def _repo_root(start: Path) -> Path:
 
 
 def _sanitize_ref_part(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._/-]+", "-", value).strip("/.-")
-    return cleaned or "repo"
+    """把 workspace 相对路径转换成合法且稳定的单段 Git ref 名。"""
+    parts: list[str] = []
+    for raw_part in value.replace("\\", "/").split("/"):
+        part = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_part)
+        part = part.strip(".-").replace("..", "-")
+        if not part:
+            part = "repo"
+        if part.endswith(".lock"):
+            part = part[:-5] + "-lock"
+        parts.append(part)
+    return "-".join(parts) or "repo"
 
 
 def _repo_id(relpath: str) -> str:
@@ -138,19 +174,73 @@ def _ensure_up(machine: Machine, endpoint: config.Endpoint, state_dir: Path) -> 
     return "need up"
 
 
-def _push_bundles(endpoint: config.Endpoint, snapshots: snapshot.SnapshotSet) -> None:
-    """每 repo 的 snapshot commit 打 bundle，经 ssh 二进制流送入容器 mirror。"""
-    ws = endpoint.workspace_root
+def _remote_parity_heads(
+    endpoint: config.Endpoint, snapshots: snapshot.SnapshotSet
+) -> dict[str, str]:
+    """一次 SSH 查询远端 mirror 中各仓库的 parity ref。"""
+    lines: list[str] = ["set -u"]
     for rec in snapshots.repos:
+        mirror = _mirror_path(endpoint.workspace_root, rec.relpath)
+        parity = _parity_ref(rec.relpath)
+        rel = shlex.quote(rec.relpath)
+        q_mirror = shlex.quote(mirror)
+        q_parity = shlex.quote(parity)
+        lines.append(
+            f"printf 'PARITY\\t'; printf '%s\\t' {rel}; "
+            f"if value=$(git -C {q_mirror} rev-parse --verify --quiet {q_parity} 2>/dev/null); "
+            "then printf '%s' \"$value\"; else printf 'MISSING'; fi; printf '\\n'"
+        )
+    result = ssh.ssh_run(endpoint, "\n".join(lines), timeout_sec=300)
+    if result.returncode != 0:
+        err = (result.stderr or b"").decode("utf-8", "replace").strip()
+        raise ssh.SSHError(f"远端 parity 查询失败（{result.returncode}）: {err[-500:]}")
+
+    heads: dict[str, str] = {}
+    for line in result.stdout.decode("utf-8", "replace").splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) == 3 and parts[0] == "PARITY" and parts[2] != "MISSING":
+            heads[parts[1]] = parts[2].strip()
+    return heads
+
+
+def _bundle_plan(
+    rec: snapshot.RepoSnapshot, remote_parity: str | None
+) -> BundlePlan:
+    """根据远端 parity 和 snapshot parent 选择 skip、delta 或 full。"""
+    if remote_parity == rec.commit:
+        return BundlePlan("skip", rec.commit)
+    if rec.parent_commit and remote_parity == rec.parent_commit:
+        ref = f"refs/remote-plugin/sync/workspace/{_sanitize_ref_part(_repo_id(rec.relpath))}"
+        return BundlePlan("delta", f"{rec.parent_commit}..{ref}", ref)
+    ref = f"refs/remote-plugin/sync/workspace/{_sanitize_ref_part(_repo_id(rec.relpath))}"
+    return BundlePlan("full", ref, ref)
+
+
+def _push_bundles(
+    endpoint: config.Endpoint,
+    snapshots: snapshot.SnapshotSet,
+    remote_parity: dict[str, str],
+) -> BundlePushResult:
+    """只传输远端缺失的仓库，并优先使用 parent snapshot 的差量 bundle。"""
+    ws = endpoint.workspace_root
+    result = BundlePushResult()
+    for rec in snapshots.repos:
+        plan = _bundle_plan(rec, remote_parity.get(rec.relpath))
+        result.modes[rec.relpath] = plan.mode
+        if plan.mode == "skip":
+            result.skipped.append(rec.relpath)
+            output.progress({"phase": "bundle-skip", "repo": rec.relpath})
+            continue
+
         mirror = _mirror_path(ws, rec.relpath)
         bundle = _bundle_tmp(ws, rec.relpath, rec.commit)
-        ref = f"refs/remote-plugin/sync/workspace/{_sanitize_ref_part(_repo_id(rec.relpath))}"
-        # bundle 需要 ref 作为 tip（裸 sha 会被 git 拒绝）
-        subprocess.run(
-            ["git", "-C", str(rec.repo), "update-ref", ref, rec.commit],
-            check=True,
-            capture_output=True,
-        )
+        if plan.temporary_ref is not None:
+            # 合成 snapshot 没有分支 ref；full 和 delta 都需要临时 ref 作为 tip。
+            subprocess.run(
+                ["git", "-C", str(rec.repo), "update-ref", plan.temporary_ref, rec.commit],
+                check=True,
+                capture_output=True,
+            )
         try:
             remote_cmd = (
                 "set -e; "
@@ -164,14 +254,26 @@ def _push_bundles(endpoint: config.Endpoint, snapshots: snapshot.SnapshotSet) ->
                 f"{shlex.quote(rec.commit + ':' + _parity_ref(rec.relpath))} >/dev/null; "
                 f"rm -f {shlex.quote(bundle)}"
             )
-            local_cmd = ["git", "-C", str(rec.repo), "bundle", "create", "-", ref]
-            ssh.ssh_pipe(endpoint, local_cmd, remote_cmd)
-        finally:
-            subprocess.run(
-                ["git", "-C", str(rec.repo), "update-ref", "-d", ref],
-                check=False,
-                capture_output=True,
+            local_revision = plan.revision
+            local_cmd = [
+                "git", "-C", str(rec.repo), "bundle", "create", "-", local_revision
+            ]
+            output.progress(
+                {"phase": "bundle-push", "repo": rec.relpath, "mode": plan.mode}
             )
+            ssh.ssh_pipe(endpoint, local_cmd, remote_cmd)
+            result.pushed.append(rec.relpath)
+        finally:
+            if plan.temporary_ref is not None:
+                subprocess.run(
+                    [
+                        "git", "-C", str(rec.repo), "update-ref", "-d",
+                        plan.temporary_ref,
+                    ],
+                    check=False,
+                    capture_output=True,
+                )
+    return result
 
 
 def _materialize(endpoint: config.Endpoint, snapshots: snapshot.SnapshotSet) -> None:
@@ -352,6 +454,17 @@ def sync_git(machine: Machine, local_root: Path) -> SyncResult:
         output.progress({"phase": "blocked", "reason": reason})
         return SyncResult("blocked", {}, {}, [], reason=reason)
 
+    last = _load_last_state(state_dir, machine.alias)
+    parent_commits: dict[str, str] = {}
+    if last is not None:
+        raw_commits = last.get("snapshot_commits")
+        if isinstance(raw_commits, dict):
+            parent_commits = {
+                str(relpath): commit
+                for relpath, commit in raw_commits.items()
+                if isinstance(relpath, str) and isinstance(commit, str)
+            }
+
     output.progress({"phase": "snapshot-build"})
     contexts = workspace.discover_repositories(local_root)
     extras = [
@@ -359,10 +472,9 @@ def sync_git(machine: Machine, local_root: Path) -> SyncResult:
         for context in contexts
         if context.path != local_root
     ]
-    snapshots = snapshot.build_snapshots(local_root, extras)
+    snapshots = snapshot.build_snapshots(local_root, extras, parent_commits)
     commits = snapshots.snapshot_commits()
 
-    last = _load_last_state(state_dir, machine.alias)
     if last is not None and last.get("snapshot_commits") == commits:
         # no-change 快路径：snapshot 与上次一致 → 单次 SSH 校验
         output.progress({"phase": "no-change-check"})
@@ -372,8 +484,9 @@ def sync_git(machine: Machine, local_root: Path) -> SyncResult:
             return SyncResult("no_change", commits, heads, [])
         output.progress({"phase": "full-sync"})
 
-    output.progress({"phase": "bundle-push"})
-    _push_bundles(endpoint, snapshots)
+    output.progress({"phase": "parity-probe"})
+    remote_parity = _remote_parity_heads(endpoint, snapshots)
+    push_result = _push_bundles(endpoint, snapshots, remote_parity)
     output.progress({"phase": "materialize"})
     _materialize(endpoint, snapshots)
     output.progress({"phase": "verify"})
@@ -387,11 +500,22 @@ def sync_git(machine: Machine, local_root: Path) -> SyncResult:
             heads,
             snapshots.aggregate_changed_paths(),
             reason="远端 commit/dirty/sha256 与 snapshot 不一致，fail closed",
+            pushed_repos=push_result.pushed,
+            skipped_repos=push_result.skipped,
+            bundle_modes=push_result.modes,
         )
 
     _save_last_state(state_dir, machine.alias, commits)
     output.progress({"phase": "ready"})
-    return SyncResult("ready", commits, heads, snapshots.aggregate_changed_paths())
+    return SyncResult(
+        "ready",
+        commits,
+        heads,
+        snapshots.aggregate_changed_paths(),
+        pushed_repos=push_result.pushed,
+        skipped_repos=push_result.skipped,
+        bundle_modes=push_result.modes,
+    )
 
 
 def cli_sync(args: Any) -> dict[str, Any]:

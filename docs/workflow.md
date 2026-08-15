@@ -57,8 +57,9 @@ T0 自验：compileall + spec.md T0 的 4 条 **[本地]** 步骤。通过后提
 3. **T3**：前台 run → 后台占坑（cards 0,1）→ machines 占用展示 → logs → stop → 超时 → stale reconcile
 4. **T4**：`--paths` 定向同步 → 远端 sha256 比对 → LF 行尾验证
 5. **T5**：fixture 仓库（主 repo + submodule，dirty）整树同步 → no_change 快路径 → submodule 版本切换 → sha256 抽检
-6. **T6**（可选）：任一 harness 挂载 skill 跑 agent 任务
-7. **T2 down**：默认**不执行**；需要时先问用户
+6. **T5 增量**：记录一次 full baseline；只改根仓库后再次同步，检查未变化子仓库 `skip`、根仓库 `delta`，并比较传输 wall time 与 bundle 字节数
+7. **T6**（可选）：任一 harness 挂载 skill 跑 agent 任务
+8. **T2 down**：默认**不执行**；需要时先问用户
 
 任何一步失败：记录现象与日志路径，修复后从失败步骤续跑。
 

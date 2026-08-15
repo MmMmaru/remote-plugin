@@ -197,14 +197,16 @@ remote-plugin/
 
 **关键函数**：
 
-- `snapshot.build_snapshots(local_root: Path, extra_repositories: list[tuple[Path, str]] | None = None) -> SnapshotSet`
-  - postorder 递归（叶子 submodule → 父 → 根）；每 repo 临时 index 全量 add、剔除 ignored 与子模块路径、gitlink 替换为子 snapshot id、写确定性 parentless commit；记录 `source_head`
-  - 输出：每 repo 的 snapshot sha + changed_paths
+- `snapshot.build_snapshots(local_root: Path, extra_repositories: list[tuple[Path, str]] | None = None, parent_commits: dict[str, str] | None = None) -> SnapshotSet`
+  - postorder 递归（叶子 submodule → 父 → 根）；每 repo 临时 index 全量 add、剔除 ignored 与子模块路径、gitlink 替换为子 snapshot id；记录 `source_head`
+  - 对 `parent_commits` 中仍存在的旧 snapshot：内容不变时复用旧 commit，内容变化时以旧 commit 为 parent；无可用 parent 时生成 parentless commit
+  - 输出：每 repo 的 snapshot sha + changed_paths + parent_commit
 - `sync_git.sync_git(machine: Machine, local_root: Path) -> SyncResult`
+  - snapshot 后一次查询远端 parity；按 repo 选择 `skip`（parity 等于当前 snapshot）、`delta`（parity 等于 parent，发送 `parent..current`）或 `full`（首次/缺失/漂移）
   - bundle → ssh 二进制流 → 容器内 mirror（`<workspace_root>/.remote-mirrors/`）→ parity ref → materialize 到 workspace 内各 repo 目录（子模块 URL 改写为容器内 mirror，递归显式展开）→ 按旧逻辑校验 commit/dirty/sha256，不符 fail closed
   - snapshot 还会发现 workspace 内 registered Git worktree，并将其作为独立 repo 节点同步
   - no-change 快路径：snapshot 与上次一致 → 单次 SSH 校验后回 `no_change`
-  - 输出 `{status: ready|no_change|blocked|failed, snapshots: {...}, remote_heads: {...}, changed_paths: [...]}`
+  - 输出 `{status: ready|no_change|blocked|failed, snapshots: {...}, remote_heads: {...}, changed_paths: [...], bundle_transfer: {pushed: [...], skipped: [...], modes: {...}}}`
   - 绝不触发编译/install；未 `up` 过 → `blocked: need up`
 - 参考实现（裁剪重写，不照抄）：`vllm-ascend-workspace/.agents/skills/remote-code-parity/scripts/remote_code_parity.py`
 
@@ -216,7 +218,8 @@ remote-plugin/
 3. **[真机-串行]** 无改动再跑 → `no_change` 且只有一次轻量 SSH（用 ssh 调用计数或耗时佐证）
 4. **[真机-串行]** 修改 submodule 内容后 sync → 远端可见；切 submodule 到另一 commit 后 sync → 版本正确落地
 5. **[真机-串行]** 远端 sha256 抽检与本地一致（CRLF 验收：`core.autocrlf=true` 客户端配置下同步，远端仍 LF）
-6. **[人工]** 可选重负载：对 vllm-ascend-workspace 整树（含 vllm/vllm-ascend 子模块）同步一次，记录耗时与结果
+6. **[真机-串行]** 在同一远端先做一次 full baseline，再只修改根仓库文件重复同步；记录 wall time、`bundle_transfer.modes` 与 bundle 字节数，确认未变化子仓库为 `skip`、根仓库为 `delta`
+7. **[人工]** 可选重负载：对 vllm-ascend-workspace 整树（含 vllm/vllm-ascend 子模块）同步一次，记录耗时与结果
 
 ---
 

@@ -1,9 +1,10 @@
 """T5 方法 A：synthetic snapshot 构建（纯本地，可单测）。
 
 对每个仓库（叶子 submodule → 父 → 根，postorder）构造一个确定性
-parentless synthetic commit：临时 index 全量 add（committed + staged +
-unstaged + untracked 非 ignored），剔除子模块路径，gitlink 替换为子
-snapshot id；真实 HEAD 记为 source_head。不写任何 ref、不碰工作树。
+synthetic commit：临时 index 全量 add（committed + staged + unstaged +
+untracked 非 ignored），剔除子模块路径，gitlink 替换为子 snapshot id；
+真实 HEAD 记为 source_head。可选地复用上次 snapshot 或以其为 parent，
+用于后续生成 delta bundle。不写任何 ref、不碰工作树。
 """
 from __future__ import annotations
 
@@ -23,6 +24,9 @@ _AUTHOR_EMAIL = "snapshot@remote-plugin.invalid"
 _COMMIT_DATE = "1970-01-01T00:00:00Z"
 
 _GIT_TIMEOUT_SEC = 300
+
+# Git SHA-1 与 SHA-256 仓库对象 ID 的长度范围。
+_OBJECT_ID_RE = re.compile(r"^[0-9a-fA-F]{40,64}$")
 
 # 插件自有目录：不入 snapshot（否则 state 文件写入会使多次构建非确定）
 _PLUGIN_DIRS = (".remote",)
@@ -44,6 +48,7 @@ class RepoSnapshot:
     changed_paths: list[str]  # source_head..commit 的相对路径（剔 transport-only）
     submodules: list[dict[str, str]] = field(default_factory=list)
     # [{name, path, commit}]，path 相对本仓库
+    parent_commit: str | None = None  # 本次新建 snapshot 的上一个 snapshot
 
 
 @dataclass
@@ -112,6 +117,21 @@ def _identity_env() -> dict[str, str]:
 
 def _git_head(repo: Path) -> str | None:
     result = _git(repo, ["rev-parse", "--verify", "HEAD"], check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout.strip()
+
+
+def _valid_object_id(value: str | None) -> bool:
+    """判断外部状态中的 Git object id 是否具备安全的十六进制格式。"""
+    return value is not None and _OBJECT_ID_RE.fullmatch(value) is not None
+
+
+def _commit_tree(repo: Path, commit: str) -> str | None:
+    """读取 commit 对应的 tree；commit 不存在或格式非法时返回 None。"""
+    if not _valid_object_id(commit):
+        return None
+    result = _git(repo, ["rev-parse", f"{commit}^{{tree}}"], check=False)
     if result.returncode != 0 or not result.stdout.strip():
         return None
     return result.stdout.strip()
@@ -247,9 +267,11 @@ def _changed_paths(
 
 
 def _build_snapshot(
-    node: _RepoNode, child_commits: dict[str, RepoSnapshot]
+    node: _RepoNode,
+    child_commits: dict[str, RepoSnapshot],
+    parent_commit: str | None = None,
 ) -> RepoSnapshot:
-    """为单个仓库构造确定性 parentless synthetic commit。"""
+    """为单个仓库构造 snapshot，必要时把上次 snapshot 作为 parent。"""
     repo = node.repo
     source_head = _git_head(repo)
 
@@ -292,7 +314,19 @@ def _build_snapshot(
 
         tree = _git(repo, ["write-tree"], env=env).stdout.strip()
         message = f"remote-plugin snapshot {node.relpath}"
-        commit = _git(repo, ["commit-tree", tree, "-m", message], env=env).stdout.strip()
+        parent_tree = _commit_tree(repo, parent_commit or "")
+        parent = parent_commit if parent_tree is not None else None
+        if parent is not None and parent_tree == tree:
+            # 工作树内容没有变化时复用旧 snapshot，保持 no-change 快路径的 SHA 不变。
+            commit = parent
+            parent_for_result = None
+        else:
+            commit_args = ["commit-tree", tree]
+            if parent is not None:
+                commit_args.extend(["-p", parent])
+            commit_args.extend(["-m", message])
+            commit = _git(repo, commit_args, env=env).stdout.strip()
+            parent_for_result = parent
         changed = _changed_paths(repo, source_head, commit, node, child_commits)
         return RepoSnapshot(
             relpath=node.relpath,
@@ -302,6 +336,7 @@ def _build_snapshot(
             tree=tree,
             changed_paths=changed,
             submodules=submodules,
+            parent_commit=parent_for_result,
         )
     finally:
         try:
@@ -313,12 +348,14 @@ def _build_snapshot(
 def build_snapshots(
     local_root: Path,
     extra_repositories: list[tuple[Path, str]] | None = None,
+    parent_commits: dict[str, str] | None = None,
 ) -> SnapshotSet:
     """postorder 递归为 local_root 整树构造 synthetic snapshots。
 
     - 叶子 submodule → 父 submodule → 根仓库；
     - 每 repo：临时 index 全量 add、剔除 ignored 与子模块路径、
-      gitlink 替换为子 snapshot id、写确定性 parentless commit；
+      gitlink 替换为子 snapshot id；有可用旧 snapshot 且内容变化时以其为 parent，
+      内容不变时复用旧 snapshot；否则写 parentless commit；
     - 记录 source_head，输出每 repo 的 snapshot sha 与 changed_paths。
     """
     local_root = Path(local_root).resolve()
@@ -327,8 +364,9 @@ def build_snapshots(
     tree = _discover_tree(local_root, extra_repositories=extra_repositories)
     child_commits: dict[str, RepoSnapshot] = {}
     repos: list[RepoSnapshot] = []
+    parents = parent_commits or {}
     for node in _iter_postorder(tree):
-        record = _build_snapshot(node, child_commits)
+        record = _build_snapshot(node, child_commits, parents.get(node.relpath))
         child_commits[node.relpath] = record
         repos.append(record)
     root = child_commits["."]

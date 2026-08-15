@@ -1,7 +1,7 @@
 # remote-plugin PRD
 
-> 版本：v0.2（CLI-only 重构）
-> 状态：待实施
+> 版本：v0.3（CLI-only 重构 + repo 级增量 bundle）
+> 状态：已实施；PPU 端到端增量验收通过
 
 ## 1. 定位与目标
 
@@ -206,12 +206,16 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 - **CLI**：`remote sync <alias>`
 - **内核函数**：`sync_git(machine: Machine, local_root: Path) -> SyncResult`
 - **流程**（继承 vllm remote-code-parity 主线，裁剪后）：
-  1. postorder 递归（叶子 submodule → 父 submodule → 根 repo）为每个 repo 构造**确定性 parentless synthetic snapshot commit**：临时 index 全量 add，剔除 ignore 与子模块路径，子模块 gitlink 替换为子 snapshot id；真实 HEAD 记为 `source_head`
-  2. 每个 repo 生成 git bundle，经 **ssh 二进制流**送入容器内 mirror（`<workspace_root>/.remote-mirrors/`），fetch 后更新 parity ref
-  3. materialize：workspace 内各 repo 目录 fetch + 强制对齐到 snapshot ref，子模块 URL 改写为容器内 mirror 路径并递归显式展开
-  4. 按既有校验逻辑检查容器内各 repo commit id、dirty 状态和 sha256 抽检，任一不符即 fail closed
-- **输出**：`{status: ready|no_change|blocked|failed, snapshots: {repo: sha}, remote_heads: {repo: sha}, changed_paths: [...]}`
+  1. postorder 递归（叶子 submodule → 父 submodule → 根 repo）为每个 repo 构造确定性 synthetic snapshot commit：临时 index 全量 add，剔除 ignore 与子模块路径，子模块 gitlink 替换为子 snapshot id；真实 HEAD 记为 `source_head`。
+     若本地保存了上次 snapshot，则内容未变化时复用旧 commit，内容变化时以旧 commit 为 parent。
+  2. 一次 SSH 查询远端 mirror 的 parity ref，逐 repo 决策传输方式：远端已是当前 snapshot 时 `skip`；远端正好是 parent 时只生成 `parent..current` 的 delta bundle；首次同步、parity 缺失或发生漂移时回退 `full` bundle。bundle 经 **ssh 二进制流**送入容器内 mirror（`<workspace_root>/.remote-mirrors/`），fetch 后更新 parity ref。
+  3. materialize：workspace 内各 repo 目录 fetch + 强制对齐到 snapshot ref，子模块 URL 改写为容器内 mirror 路径并递归显式展开。
+  4. 按既有校验逻辑检查容器内各 repo commit id、dirty 状态和 sha256 抽检，任一不符即 fail closed。
+- **输出**：`{status: ready|no_change|blocked|failed, snapshots: {repo: sha}, remote_heads: {repo: sha}, changed_paths: [...], bundle_transfer: {pushed: [...], skipped: [...], modes: {repo: full|delta|skip}}}`
 - no-change 快路径：snapshot 与上次一致时单次 SSH 校验后直接返回
+
+增量边界：首次同步仍按 repo 发送 full bundle；本地 snapshot 构建仍需扫描每个仓库的工作树，但不会重复传输未变化 repo 的 Git 对象。
+如果远端 parity 与本地 parent 不一致，宁可发送可独立解包的 full bundle，也不猜测远端对象状态。
 
 ### 4.2 方法 B：指定文件/路径传输
 

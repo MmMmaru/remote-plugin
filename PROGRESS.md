@@ -76,3 +76,17 @@
 - 新增 `remote_plugin/install.py`，提供 `install_launcher(source, bin_dir)` 与 `InstallResult`。
 - 新增 `remote install`，原子创建 `~/.local/bin/remote` 符号链接；同一入口重复执行幂等，其他文件/链接占用时 fail closed。
 - 新增安装器与 CLI 注册单测，更新 README、SKILL、PRD、spec、workflow 和遗留项。
+
+## 2026-08-15 增量 bundle 同步
+
+- `snapshot.build_snapshots` 支持读取上次 snapshot 作为 parent：内容不变复用旧 commit，内容变化生成 parented snapshot。
+- `sync_git` 增加一次远端 parity probe，按仓库选择 `skip`、`delta` 或 `full` bundle；delta 通过临时 ref 生成 `parent..current` 范围包，避免 Git 拒绝裸 synthetic SHA。
+- `SyncResult` 增加 `bundle_transfer` 统计；补充 snapshot parent/delta 与根变更跳过子仓库的单测。
+- 本地 `tests.test_snapshot tests.test_sync_git` 24 条测试全绿；PPU full/delta 传输计时已完成。
+
+## 2026-08-15 PPU 增量端到端验收
+
+- 使用旧实现做同一 workspace 的 full baseline：4 个 repo bundle 合计 39,515,215 字节，wall time 132.15 秒，结果 `ready`。
+- 只在 workspace 根增加临时 marker 后使用新实现：3 个 repo `skip`，根 repo `delta`；实际 delta bundle 492 字节，wall time 4.56 秒，结果 `ready`。
+- 新实现 no-change 快路径 wall time 2.70 秒；最终删除 marker 并再次同步，PPU 远端 root/vllm-seu HEAD 与本地结果一致，marker 不存在。
+- 原始计时日志保存在 workspace 根 `.log/remote-plugin-{old-full-baseline,incremental-delta,no-change,final-restore}.*`。

@@ -59,7 +59,9 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
    停下来问人类**，不盲目重试、不擅自换源。`remote up` 拉取镜像失败且报错提示
    网络因素时同样照此办理：按提示换镜像源或配 proxy；提示宿主机无 proxy 时，
    向用户问清可用的 proxy/镜像源再重试。
-6. **sync 只同步代码。** `remote sync` 绝不隐式触发编译/install；编译必须由
+6. **sync 只同步代码。** `remote sync` 绝不隐式触发编译/install；默认按 repo 做增量
+   bundle：结果中的 `bundle_transfer.modes` 为 `skip`、`delta` 或 `full`。首次同步、
+   parity 丢失或远端漂移时出现 `full` 是预期的 fail-closed 回退。编译必须由
    `remote run` 显式发起，例如：
    `remote run <alias> --background --task "编译验证" --cmd "pip install --no-deps -e . --no-build-isolation" --timeout 3600`。
 7. **输出契约。** 进度走 stderr，最终结果是 stdout 单行 JSON；按 `status`/`exit_code`

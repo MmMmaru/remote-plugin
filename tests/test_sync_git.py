@@ -158,12 +158,25 @@ class SyncGitBase(unittest.TestCase):
 
 
 class TestSyncGit(SyncGitBase):
+    def test_nested_hidden_worktree_ref_is_valid(self):
+        """嵌套 .worktrees 路径生成的临时 ref 必须能被 Git 接受。"""
+        ref_part = sync_git._sanitize_ref_part(
+            ".agents/skills/remote-plugin/.worktrees/incremental-sync"
+        )
+        result = subprocess.run(
+            ["git", "check-ref-format", f"refs/remote-plugin/sync/workspace/{ref_part}"],
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
     def test_ready_end_to_end(self):
         machine = self._ssh_machine()
         result = sync_git.sync_git(machine, self.local_root)
         self.assertEqual(result.status, "ready")
         self.assertEqual(set(result.snapshots), {"sub", "."})
         self.assertEqual(result.remote_heads, result.snapshots)
+        self.assertEqual(result.bundle_modes, {"sub": "full", ".": "full"})
+        self.assertEqual(result.skipped_repos, [])
         # 容器内 mirror 已建立
         self.assertTrue((self.ws / ".remote-mirrors" / "root.git" / "objects").is_dir())
         self.assertTrue((self.ws / ".remote-mirrors" / "sub.git" / "objects").is_dir())
@@ -200,6 +213,25 @@ class TestSyncGit(SyncGitBase):
         self.assertIn("sub", cp)      # gitlink 移动（sub dirty → 非 transport-only）
         self.assertIn("sub/x.txt", cp)
         self.assertNotIn("ignored.txt", cp)
+
+    def test_changed_root_skips_unchanged_submodule_and_uses_delta(self):
+        """只改根仓库时，子模块不再重复传输，根仓库使用 delta bundle。"""
+        machine = self._ssh_machine()
+        first = sync_git.sync_git(machine, self.local_root)
+        pipes_after_first = len(self.fake.pipe_calls)
+
+        (self.local_root / "c.txt").write_text("root-only-change", encoding="utf-8")
+        second = sync_git.sync_git(machine, self.local_root)
+
+        self.assertEqual(second.status, "ready")
+        self.assertEqual(second.bundle_modes, {"sub": "skip", ".": "delta"})
+        self.assertEqual(second.pushed_repos, ["."])
+        self.assertEqual(second.skipped_repos, ["sub"])
+        self.assertEqual(len(self.fake.pipe_calls), pipes_after_first + 1)
+        self.assertEqual(second.remote_heads, second.snapshots)
+        self.assertEqual(
+            (self.ws / "c.txt").read_text(encoding="utf-8"), "root-only-change"
+        )
 
     def test_registered_worktree_is_synced_without_cli_selector(self):
         """workspace 内 registered worktree 自动获得独立 snapshot 与远端目录。"""

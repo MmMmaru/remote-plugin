@@ -12,6 +12,7 @@ harness（Codex / Claude Code / deepseek-harness 等）零配置接入。
   模式 B = 直接 SSH 端点。
 - **占用由 Job 表达**：机器/卡的占用 = 其上 `status=running` 的 Job 集合，`remote machines` 即可见 owner/task/卡。
 - **字节级一致**：代码经 `tar|ssh` 或 `git bundle|ssh` 二进制流传输，远端 sha256 抽检，fail-closed。
+- **增量同步**：`sync` 会按 repo 查询远端 parity；未变化 repo 跳过，恰好基于上次 snapshot 变化的 repo 发送 delta bundle，首次或状态漂移时回退 full bundle。
 
 ## 运行
 
@@ -62,7 +63,8 @@ remote-plugin 仓库自身的 `.remote/state`（`remote` 入口脚本所在目�
 `sync` 默认从当前目录定位 workspace（优先取最近的 `.remote` 根目录），直接同步到远端
 `workspace_root`，不再创建或选择 `main` 目录。快照会递归发现 workspace 内的 Git 仓库，
 并纳入各仓库通过 `git worktree` 注册且位于 workspace 内的 worktree；普通目录仍遵循所属
-仓库的 `.gitignore` 规则。
+仓库的 `.gitignore` 规则。同步结果中的 `bundle_transfer` 会报告每个 repo 的 `full`、
+`delta` 或 `skip` 决策。
 
 例如将 `vllm-seu` 的分支 worktree 放在 workspace 内：
 

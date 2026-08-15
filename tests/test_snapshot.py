@@ -106,6 +106,51 @@ class TestBuildSnapshots(_TempDir):
         ls = _git(repo, "ls-tree", "--name-only", s2.root.commit).stdout
         self.assertNotIn(".remote", ls)
 
+    def test_parented_snapshot_reuses_tree_and_creates_delta(self):
+        """内容不变复用旧 snapshot，内容变化时新 snapshot 只继承旧对象。"""
+        repo = self.root / "repo"
+        _make_repo(repo)
+        (repo / "a.txt").write_text("v1", encoding="utf-8")
+        _commit_all(repo, "c1")
+
+        first = snapshot.build_snapshots(repo)
+        reused = snapshot.build_snapshots(
+            repo, parent_commits={".": first.root.commit}
+        )
+        self.assertEqual(reused.root.commit, first.root.commit)
+        self.assertIsNone(reused.root.parent_commit)
+
+        (repo / "a.txt").write_text("v2", encoding="utf-8")
+        changed = snapshot.build_snapshots(
+            repo, parent_commits={".": first.root.commit}
+        )
+        self.assertNotEqual(changed.root.commit, first.root.commit)
+        self.assertEqual(changed.root.parent_commit, first.root.commit)
+        self.assertEqual(
+            _git(repo, "show", "-s", "--format=%P", changed.root.commit).stdout.strip(),
+            first.root.commit,
+        )
+
+        ref = "refs/tests/snapshot-delta"
+        _git(repo, "update-ref", ref, changed.root.commit)
+        try:
+            full = subprocess.run(
+                ["git", "-C", str(repo), "bundle", "create", "-", ref],
+                capture_output=True,
+            )
+            delta = subprocess.run(
+                [
+                    "git", "-C", str(repo), "bundle", "create", "-",
+                    f"{first.root.commit}..{ref}",
+                ],
+                capture_output=True,
+            )
+        finally:
+            _git(repo, "update-ref", "-d", ref)
+        self.assertEqual(full.returncode, 0, full.stderr.decode())
+        self.assertEqual(delta.returncode, 0, delta.stderr.decode())
+        self.assertLess(len(delta.stdout), len(full.stdout))
+
     def test_submodule_gitlink_replacement_and_transport_only(self):
         root_repo = self.root / "root"
         root_repo.mkdir(parents=True)
