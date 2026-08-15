@@ -18,7 +18,12 @@ harness（Codex / Claude Code / deepseek-harness 等）零配置接入。
 ```bash
 # 仓库根目录内直接用（或把仓库根加入 PATH）
 ./remote <子命令> [参数]
+# 安装为全局可发现命令（~/.local/bin/remote）
+./remote install
 ```
+
+`remote install` 会在 `~/.local/bin` 原子创建指向当前插件入口的符号链接。重复执行
+是幂等的；若目标已是其他文件或其他链接，命令会拒绝覆盖并返回错误。
 
 机器注册 = 手写 `<repo>/.remote/machines.json`（机器对象数组）。含密码字段的该文件禁止入 git。
 状态目录从 cwd 向上找最近的 `.remote/state`；找不到任何 `.remote` 时默认落到

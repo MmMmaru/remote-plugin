@@ -69,6 +69,7 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 
 | 命令 | 用途 |
 |---|---|
+| `remote install` | 将当前插件入口原子安装为 `~/.local/bin/remote`，安装后可从任意目录调用 |
 | `remote machines` | 所有机器一览：tags、占用（owner/task/资源）、以及 NPU 机器最近 verify 的每卡 HBM/AICore 实测 |
 | `remote status <alias> [--probe]` | 单机详情；`--probe` 实时查通用负载，NPU 机器额外查 NPU 利用率/显存 |
 | `remote verify <alias>` | 环境探测，刷新 `state/docs/<alias>.md` 机器档案 |
@@ -81,8 +82,8 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 | `remote logs <job-id> [--tail 200] [--stderr]` | 读任务日志（本地落盘） |
 | `remote stop <job-id>` | 停止后台任务 |
 
-> `remote` 可执行脚本位于仓库根目录：在仓库根目录内用 `./remote <cmd>`，
-> 或把仓库根目录加入 PATH 后直接用 `remote <cmd>`。
+> `remote` 可执行脚本位于仓库根目录：首次在仓库根目录执行 `./remote install`，
+> 即可通过 `~/.local/bin/remote` 从任意目录调用；也可把仓库根目录直接加入 PATH。
 
 ## 从 0 拉起机器（bootstrap）
 

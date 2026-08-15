@@ -70,3 +70,9 @@
 - 新增 workspace 根定位与 Git 仓库发现：递归发现非 ignored 仓库，并纳入 workspace 内已注册的 Git worktree。
 - 保留原有 snapshot → bundle/mirror → materialize → HEAD/dirty/sha256 抽检校验链路；为根仓库排除 `.remote-mirrors` 与 `.remote-logs` 运行目录，避免旧 dirty 校验误报。
 - 更新 README、SKILL、PRD、spec 与 harness 文档；新增 workspace/worktree 单测与整链路回归。
+
+## 2026-08-15 全局入口安装
+
+- 新增 `remote_plugin/install.py`，提供 `install_launcher(source, bin_dir)` 与 `InstallResult`。
+- 新增 `remote install`，原子创建 `~/.local/bin/remote` 符号链接；同一入口重复执行幂等，其他文件/链接占用时 fail closed。
+- 新增安装器与 CLI 注册单测，更新 README、SKILL、PRD、spec、workflow 和遗留项。

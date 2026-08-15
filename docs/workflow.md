@@ -14,7 +14,8 @@
 
 实现 spec.md T0：`config.py` / `ssh.py` / `output.py` / `cli.py` + 入口脚本。
 
-**防并行冲突设计**：`cli.py` 预定义全部子命令分发表并惰性 import；后续子代理**只新建自己的模块文件、实现约定函数名，禁止修改 `cli.py`、`config.py`、`ssh.py`、`output.py`**。
+**防并行冲突设计**：`cli.py` 预定义全部子命令分发表并惰性 import；新增功能需同步补充
+`cli.py` 的分发表与 argparse 注册，其他实现仍优先放在独立模块中。
 
 T0 自验：compileall + spec.md T0 的 4 条 **[本地]** 步骤。通过后提交 `feat: T0 skeleton`。
 

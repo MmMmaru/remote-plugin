@@ -1,4 +1,4 @@
-"""argparse 分发：子命令分发表预定义，惰性 import。**后续任务禁止修改本文件**。"""
+"""argparse 分发：子命令分发表预定义，惰性 import。"""
 from __future__ import annotations
 
 import argparse
@@ -15,6 +15,7 @@ from .config import RemotePluginError
 # 出错抛 RemotePluginError。`sync` 的 handler 在 sync_git.py 中，按 `--paths`
 # 是否为空在方法 A（git 递归）与方法 B（指定路径）间分发。
 COMMANDS: dict[str, tuple[str, str]] = {
+    "install": ("remote_plugin.install", "cli_install"),
     "verify": ("remote_plugin.machines", "cli_verify"),
     "machines": ("remote_plugin.machines", "cli_machines"),
     "status": ("remote_plugin.machines", "cli_status"),
@@ -57,6 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="remote-plugin：CLI-only 远程开发插件",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("install", help="将 remote 入口原子安装到 ~/.local/bin")
 
     p = sub.add_parser("verify", help="验证单台机器并写机器档案")
     p.add_argument("alias")

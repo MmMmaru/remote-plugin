@@ -18,6 +18,16 @@
 - **默认在容器内开发**：整个 workspace 位于容器内，默认路径 `/vllm-workspace`；VM 宿主机仅为容器维护面，不持有代码副本
 - 输出契约：进度走 stderr，最终结果 stdout 单行 JSON，方便 agent 解析
 
+### 1.1 全局命令安装
+
+- **CLI**：`remote install`
+- **内核函数**：`install_launcher(source: Path, bin_dir: Path = Path.home() / ".local/bin") -> InstallResult`
+- **功能**：以当前插件入口文件名作为命令名，在安装目录原子创建符号链接；本插件入口
+  `remote` 默认落到 `~/.local/bin/remote`，安装后可从任意工作目录调用。
+- **幂等与安全**：目标不存在时创建；目标已指向同一插件入口时返回
+  `already_exists=true`；目标是其他文件、目录、链接或悬空链接时 fail closed，绝不覆盖。
+- **输出**：`{status: ready, install_path, command_name, already_exists}`。
+
 ## 2. 数据模型
 
 所有配置与状态均为 JSON 文件，变更加载即生效，无数据库。
@@ -139,6 +149,11 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 - SSH 实际用户、workspace_root 可写性
 
 ## 3. 功能域 1：机器管理
+
+### 3.0 全局入口安装
+
+`remote install` 只修改本地用户的 `~/.local/bin`，不连接远程机器、不读取机器配置。
+入口链接使用绝对路径，保证从任意 cwd 调用时仍加载当前插件源码。
 
 ### 3.1 注册
 

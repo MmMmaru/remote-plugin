@@ -43,6 +43,7 @@ remote-plugin/
     ssh.py           # ssh 传输原语
     output.py        # stdout 单行 JSON / stderr 进度契约
     cli.py           # argparse 分发（子命令分发表预定义，惰性 import）
+    install.py       # 本地全局 remote 入口安装器
   remote             # 可执行入口脚本
   tests/
   docs/{PRD.md, spec.md, workflow.md}
@@ -62,7 +63,7 @@ remote-plugin/
 - `ssh.ssh_pipe(endpoint, local_cmd: list[str], remote_cmd: str) -> int`
   - 本地命令 stdout → ssh stdin 的管道传输（tar/bundle 用）
 - `output.emit(obj: dict) -> None`：stdout 单行 JSON；`output.progress(obj: dict) -> None`：stderr 进度
-- `cli.py` 预定义分发表 `COMMANDS = {"verify": ("remote_plugin.machines", "cli_verify"), ...}`，惰性 import；**后续任务禁止修改本文件**，只需实现约定函数
+- `cli.py` 预定义分发表 `COMMANDS = {"install": ("remote_plugin.install", "cli_install"), ...}`，惰性 import；新增子命令需同步注册分发表与 argparse
 
 **E2E 验证**：
 
@@ -70,7 +71,17 @@ remote-plugin/
    - 预期：解析出 alias `192.168.9.166`，tags 为 dict（chip=ascend-a2 / cards=8 / os=linux），workspace_root 正确
 2. **[本地]** 在 `remote-plugin/.remote/` 放一个冲突 alias 的 JSON → 预期项目级（就近）生效且 stderr 有告警
 3. **[本地]** 构造缺 `host` 的数组元素 / 非法 JSON → 预期报错含元素下标与字段名，无异常堆栈
-4. **[本地]** `remote verify --help`、`remote up --help` 等全部子命令可用（占位实现报"未实现"但解析正常）
+4. **[本地]** `remote install --help`、`remote verify --help`、`remote up --help` 等全部子命令可用（占位实现报"未实现"但解析正常）
+
+## T0.1 全局入口安装
+
+- `install.InstallResult`：记录 `install_path: Path`、`command_name: str`、
+  `already_exists: bool`，`to_dict()` 返回 CLI JSON。
+- `install.install_launcher(source, bin_dir)`：校验入口文件，创建安装目录，以原子
+  符号链接安装；目标已存在且不是同一插件链接时拒绝覆盖。
+- `install.cli_install(args)`：从当前插件目录定位根入口 `remote`，调用安装器并返回结果。
+- **[本地]** 在临时目录执行首次安装、重复安装、普通文件占用、其他链接占用和悬空链接
+  占用测试；每种占用场景均保持原文件不变。
 
 ---
 
