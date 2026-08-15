@@ -46,6 +46,15 @@
 - `bootstrap.ensure_container` = pull → run → 校验 `docker exec`；镜像/设备漂移降为**告警**（仅「容器未运行/不可 exec」才 `needs_repair`）
 - 同步更新 `docs/PRD.md` / `docs/spec.md` / `docs/workflow.md`
 
+## PPU 兼容性验证（2026-08-15）
+
+- [x] 注册 PPU 裸机 SSH 端点：`8.130.213.80:1016`，工作区 `/root/xrs/vllm-workspace`。
+- [x] `remote up ppu`：SSH 已免密，工作区和 `.remote-mirrors` 初始化成功。
+- [x] `remote verify ppu`：通用环境检查为 `ok`；PPU 不启用 Ascend/NPU 专属探针。
+- [x] `remote sync ppu --worktree main`：snapshot commit 与远端 HEAD 一致。
+- [x] `remote run ppu`：不调用 NPU 命令、不声明 NPU 卡占用的通用冒烟测试 exit code 0。
+- [x] 更新 `SKILL.md`：明确 PPU 可用范围及 `npu-smi`、`torch_npu`、NPU 卡级探针等当前限制。
+
 ## 遗留项
 
 1. **网络 MTU 黑洞（已解决）**：到 `192.168.9.166` 的路径有效 MTU ≈1428 且 PMTUD 被吞（>1.4KB SSH 传输挂起）。由用户在客户端降 MTU（`sysctl tcp_mtu_probing=1` 或 `ip link set eth0 mtu 1400`）解决，非插件代码缺陷。

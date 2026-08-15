@@ -1,21 +1,16 @@
 [
-    {
-    "alias": "9.166",
-    "mode": "container",
-    "host": "192.168.9.166",
-    "port": 22,
-    "user": "admin123",
-    "container": {
-        "image": "quay.io/ascend/vllm-ascend:nightly-main",
-        "name": "xrs_vllm_main",
-        "ssh_port": 46000,
-        "workspace_root": "/home/x50063850/vllm-ascend-workspace"
-    },
+  {
+    "alias": "ppu",
+    "mode": "ssh",
+    "host": "8.130.213.80",
+    "port": 1016,
+    "user": "root",
+    "workspace_root": "/root/xrs/vllm-workspace",
     "tags": {
-        "chip": "ascend-a2",
-        "cards": 8,
-        "os": "linux"
+      "chip": "ppu",
+      "cards": 1,
+      "os": "linux"
     },
-    "note": "A2 机器，8 卡"
-    }
+    "note": "PPU, 单卡"
+  }
 ]

@@ -13,12 +13,31 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 
 - 任务需要在远程机器/容器上执行命令：编译、安装、冒烟、跑服务、查日志
 - 任务需要先把本地代码同步到远程，再在远程执行
-- 需要知道哪台机器空闲、谁在用、占用了哪些卡
+- 需要知道哪台机器空闲、谁在用、占用了哪些资源
 
 ## Do not use this skill when
 
 - 纯本地编码/本地测试，不涉及任何远程机器
 - 任务明确属于机器本身的生命周期维护（`up`/`down`）之外的领域
+
+## NPU 与 PPU 能力边界
+
+当前插件对 NPU 的支持比 PPU 完整。`tags.chip` 以 `ascend-` 开头时，插件才会
+启用 Ascend/NPU 专属探针；PPU 应配置为 `chip: "ppu"`，不能把 PPU 当作 NPU
+使用。
+
+- PPU 当前可用：SSH 连通性检查、工作区初始化、代码同步、通用 `remote run`、
+  Job/日志管理，以及不依赖 NPU 的 shell、Python 和 CPU 侧冒烟命令。
+- PPU 当前不可用或不应执行：`npu-smi`、`torch_npu`、NPU 型号/卡数交叉校验、
+  NPU HBM/AICore 利用率探测，以及依赖 `ASCEND_RT_VISIBLE_DEVICES` 的命令。
+- `remote verify <alias>` 在 PPU 上只验证通用环境和工作区，不会提供有效的
+  `npu_cards` 结果；`remote status <alias> --probe` 的负载、内存和 CPU 信息仍可用，
+  但 NPU 利用率字段对 PPU 没有意义。
+- `tags.cards` 和 `--cards` 原本用于声明 NPU 卡占用。PPU 尚无等价的卡级探针；
+  PPU 的短命令可以不填 `--cards`，长任务只有在已明确资源语义时才声明占用。
+
+因此，在 PPU 上做验证时优先使用 `remote verify`、`remote sync` 和不含 NPU
+依赖的 `remote run`。不要用 NPU 专属示例判断 PPU 是否可用。
 
 ## 核心规则
 
@@ -29,11 +48,12 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
    `<repo>/.remote/state/docs/<alias>.md`（简称 `state/docs/<alias>.md`）：
    OS/芯片/卡数、workspace_root、pip index 可达性、proxy 等网络事实。
    档案缺失或过期时先 `remote verify <alias>` 刷新。
-3. **干活前查占用。** `remote machines` 查看各机 running jobs 的 owner/task/卡占用，
-   避开被占用的机器与卡；`remote status <alias> [--probe]` 看单机详情。
-4. **长任务显式声明占用。** 后台任务必须带 `--background --task "<做什么>" --cards <卡号>`
-   声明占用（如 `--cards 0,1`），其他 agent 才能经 `remote machines` 看到并避让；
-   不声明等于占用不可见。
+3. **干活前查占用。** `remote machines` 查看各机 running jobs 的 owner/task/资源占用，
+   避开被占用的机器与资源；`remote status <alias> [--probe]` 看单机详情。
+4. **长任务显式声明任务。** 后台任务必须带 `--background --task "<做什么>"`；NPU
+   任务再用 `--cards <卡号>` 声明卡占用（如 `--cards 0,1`），其他 agent 才能经
+   `remote machines` 看到并避让。PPU 没有已实现的等价卡级占用语义时不要填写
+   `--cards`，但仍需填写 `--task`。
 5. **编译/安装前确认网络事实。** 先读档案中的 pip index / proxy / apt mirror，
    按档案既定源执行。**环境不确定（proxy 怎么配、镜像源不可达、报错与档案不符）时
    停下来问人类**，不盲目重试、不擅自换源。`remote up` 拉取镜像失败且报错提示
@@ -49,11 +69,11 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 
 | 命令 | 用途 |
 |---|---|
-| `remote machines` | 所有机器一览：tags、占用（owner/task/卡）、每卡 HBM/AICore 实测（`npu_cards`，来自最近 verify）、最近 verify 结论 |
-| `remote status <alias> [--probe]` | 单机详情；`--probe` 实时查负载与每卡 NPU 利用率/显存 |
+| `remote machines` | 所有机器一览：tags、占用（owner/task/资源）、以及 NPU 机器最近 verify 的每卡 HBM/AICore 实测 |
+| `remote status <alias> [--probe]` | 单机详情；`--probe` 实时查通用负载，NPU 机器额外查 NPU 利用率/显存 |
 | `remote verify <alias>` | 环境探测，刷新 `state/docs/<alias>.md` 机器档案 |
-| `remote up <alias> [--password-env NAME | --password-stdin]` | 从 0 拉起/复用容器 + 免密引导 + 工作区初始化（幂等） |
-| `remote down <alias>` | 停止并移除受管容器（默认不执行，需先问人类） |
+| `remote up <alias> [--password-env NAME | --password-stdin]` | 容器模式拉起/复用容器；SSH 模式只做免密引导与工作区初始化 |
+| `remote down <alias>` | 停止并移除容器模式的受管容器；SSH/裸机模式为空操作 |
 | `remote sync <alias> [--worktree <id>]` | 方法 A：整树 git 同步（字节级一致，不改行尾） |
 | `remote sync <alias> --paths <file>... [--worktree <id>]` | 方法 B：指定路径定向覆盖（热修补） |
 | `remote run <alias> --cmd "..." [--worktree <id>] [--cwd <path>] [--env K=V] [--cards 0,1] [--task "..."] [--timeout 600] [--background]` | 远程执行命令 |
@@ -66,7 +86,7 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 
 ## 从 0 拉起机器（bootstrap）
 
-机器三种起始状态都收敛到同一条命令 `remote up <alias>`（幂等，可重复执行）：
+容器模式的三种起始状态都收敛到同一条命令 `remote up <alias>`（幂等，可重复执行）：
 
 1. **无镜像**：`remote up` 会 `docker pull` 拉取 `container.image`。
 2. **有镜像、无容器**：`remote up` 会 `docker run` 创建名为 `container.name` 的容器（按 `tags.chip` 挂载加速卡设备）。
@@ -74,6 +94,9 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 
 `up` 同时完成：免密引导（把本地公钥写入宿主机 `authorized_keys`）、
 工作区初始化（`workspace_root/main`、`.remote-mirrors`、`core.autocrlf=false`、`core.eol=lf`）。
+
+对于 `mode: "ssh"` 的裸机或已有容器端点，`up` 不执行 `docker pull`、`docker run`
+或 `docker exec`，只完成 SSH 免密校验/引导和工作区初始化。
 
 ## 机器未注册时
 
@@ -97,8 +120,9 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 2. 读 `state/docs/<alias>.md`；缺失/过期先 `remote verify <alias>`。确认
    workspace_root、pip index、proxy 等网络事实。
 3. `remote sync <alias> --worktree <id>` 同步代码（只对齐代码，不做编译）。
-4. 长任务显式声明占用并后台执行：
+4. 长任务显式声明占用并后台执行。NPU 任务示例：
    `remote run <alias> --worktree <id> --background --task "编译验证" --cards 0,1 --cmd "pip install --no-deps -e . --no-build-isolation" --timeout 3600`
+   PPU 任务不要照搬 `--cards`，除非已经明确 PPU 的资源占用语义。
    记录返回的 `job_id`。
 5. `remote logs <job-id> --tail 200` 跟踪进度；结束后 `remote jobs --machine <alias>`
    核对占用是否释放。
