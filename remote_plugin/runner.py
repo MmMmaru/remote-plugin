@@ -217,6 +217,24 @@ def _run_foreground(job: _jobs.Job, endpoint: _config.Endpoint, env: dict,
         _jobs.save_job(job)
 
 
+def _fetcher_script(remote_log: str, done_file: str, cleanup_dir: str,
+                    lines: int | None = None) -> str:
+    """fetcher 远端脚本：等 done 后拉取合并日志并删除远端目录。
+
+    纯函数便于本地 bash 真实执行测试。``lines`` 为 None 拉全量（full），
+    否则只拉最后 ``lines`` 行（tail）。cat/tail 正常退出保证缓冲 flush。
+    """
+    fetch = f"cat {shlex.quote(remote_log)}" if lines is None else (
+        f"tail -n {int(lines)} {shlex.quote(remote_log)}"
+    )
+    return (
+        f"while [ ! -e {shlex.quote(done_file)} ]; do sleep 1; done\n"
+        f"{fetch}\n"
+        f"rm -rf {shlex.quote(cleanup_dir)}\n"
+        "exit 0\n"
+    )
+
+
 def _spawn_log_fetcher(endpoint: _config.Endpoint, remote_log: str,
                        done_file: str, local_path: Path,
                        cleanup_dir: str, lines: int | None = None) -> None:
@@ -226,15 +244,7 @@ def _spawn_log_fetcher(endpoint: _config.Endpoint, remote_log: str,
     （tail 模式）。运行期间本地不保留任何日志；结束后一次性 cat/tail
     （正常退出保证缓冲 flush，规避 tail -F 被 kill 丢块缓冲的问题）。
     """
-    fetch = f"cat {shlex.quote(remote_log)}" if lines is None else (
-        f"tail -n {int(lines)} {shlex.quote(remote_log)}"
-    )
-    script = (
-        f"while [ ! -e {shlex.quote(done_file)} ]; do sleep 1; done\n"
-        f"{fetch}\n"
-        f"rm -rf {shlex.quote(cleanup_dir)}\n"
-        "exit 0\n"
-    )
+    script = _fetcher_script(remote_log, done_file, cleanup_dir, lines)
     fh = local_path.open("wb")
     try:
         subprocess.Popen(

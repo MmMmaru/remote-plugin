@@ -255,6 +255,41 @@ class TestLauncherLocal(unittest.TestCase):
                 time.sleep(0.2)
             self.assertFalse(log.exists())  # waiter 写 done 后自清理
 
+    def test_fetcher_full_copies_whole_log_then_cleanup(self):
+        """fetcher full：done 出现后 cat 全量合并日志并删除远端目录（本地 bash 真跑）。"""
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cleanup = base / "logdir"
+            cleanup.mkdir()
+            content = "".join(f"line {i}\n" for i in range(300))
+            (cleanup / "combined.log").write_text(content, encoding="utf-8")
+            (cleanup / "done").write_text("done\n", encoding="utf-8")  # 任务已结束
+            script = runner._fetcher_script(str(cleanup / "combined.log"),
+                                            str(cleanup / "done"), str(cleanup), None)
+            cp = self._bash(script)
+            self.assertEqual(cp.returncode, 0)
+            self.assertEqual(cp.stdout.decode("utf-8"), content)  # 全量完整
+            self.assertFalse(cleanup.exists())  # 远端目录已清理
+
+    def test_fetcher_tail_keeps_last_lines(self):
+        """fetcher tail：只拉合并日志最后 N 行。"""
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cleanup = base / "logdir"
+            cleanup.mkdir()
+            (cleanup / "combined.log").write_text(
+                "".join(f"line {i}\n" for i in range(300)), encoding="utf-8")
+            (cleanup / "done").write_text("done\n", encoding="utf-8")
+            script = runner._fetcher_script(str(cleanup / "combined.log"),
+                                            str(cleanup / "done"), str(cleanup), 200)
+            cp = self._bash(script)
+            self.assertEqual(cp.returncode, 0)
+            lines = cp.stdout.decode("utf-8").splitlines()
+            self.assertEqual(len(lines), 200)
+            self.assertEqual(lines[0], "line 100")
+            self.assertEqual(lines[-1], "line 299")
+            self.assertFalse(cleanup.exists())
+
     def test_background_timeout_kills_process_group(self):
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / "log"
