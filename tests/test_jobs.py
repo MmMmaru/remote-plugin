@@ -165,20 +165,33 @@ class TestRunningJobs(_Base):
 
 class TestJobTail(_Base):
     def test_last_lines(self):
-        self._make_job(status="done", pid=None)
+        self._make_job(status="done", pid=None,
+                       logs="full", log="state/jobs/j-20260813-140530-01/full.log")
         d = self.state / "jobs" / "j-20260813-140530-01"
-        (d / "stdout.log").write_text("a\nb\nc\nd\n", encoding="utf-8")
+        (d / "full.log").write_text("a\nb\nc\nd\n", encoding="utf-8")
         self.assertEqual(jobs.job_tail("j-20260813-140530-01", 2, "stdout"), "c\nd")
         self.assertEqual(jobs.job_tail("j-20260813-140530-01", 0, "stdout"), "a\nb\nc\nd\n")
 
-    def test_missing_stream_file_returns_empty(self):
-        self._make_job(status="running", pid=555)
+    def test_missing_log_file_returns_empty(self):
+        self._make_job(status="running", pid=555,
+                       logs="full", log="state/jobs/j-20260813-140530-01/full.log")
         self.assertEqual(jobs.job_tail("j-20260813-140530-01", 5, "stderr"), "")
 
-    def test_bad_stream_raises(self):
+    def test_stream_ignored_merged_log(self):
+        """合并日志：stream 参数被忽略，任何取值返回同一份内容。"""
+        self._make_job(status="done", pid=None,
+                       logs="tail", log="state/jobs/j-20260813-140530-01/tail.log")
+        d = self.state / "jobs" / "j-20260813-140530-01"
+        (d / "tail.log").write_text("x\ny\n", encoding="utf-8")
+        self.assertEqual(jobs.job_tail("j-20260813-140530-01", 1, "stderr"), "y")
+        self.assertEqual(jobs.job_tail("j-20260813-140530-01", 5, "bogus"), "x\ny")
+
+    def test_legacy_job_without_log_returns_empty(self):
+        """旧格式记录（stdout.log/stderr.log 分离）不再读取。"""
         self._make_job(status="done", pid=None)
-        with self.assertRaises(config.RemotePluginError):
-            jobs.job_tail("j-20260813-140530-01", 5, "bogus")
+        d = self.state / "jobs" / "j-20260813-140530-01"
+        (d / "stdout.log").write_text("old\n", encoding="utf-8")
+        self.assertEqual(jobs.job_tail("j-20260813-140530-01", 5, "stdout"), "")
 
 
 class TestJobStop(_Base):

@@ -90,3 +90,17 @@
 - 只在 workspace 根增加临时 marker 后使用新实现：3 个 repo `skip`，根 repo `delta`；实际 delta bundle 492 字节，wall time 4.56 秒，结果 `ready`。
 - 新实现 no-change 快路径 wall time 2.70 秒；最终删除 marker 并再次同步，PPU 远端 root/vllm-seu HEAD 与本地结果一致，marker 不存在。
 - 原始计时日志保存在 workspace 根 `.log/remote-plugin-{old-full-baseline,incremental-delta,no-change,final-restore}.*`。
+
+## 2026-08-16 worktree 一级扫描 + run 日志保留策略
+
+- 仓库发现改为只扫描 workspace 一级目录（root + 直接子目录的 .git），深度 ≥2 的
+  独立仓库不再发现；registered worktree 仍由 owner 的 `git worktree list` 查询覆盖，
+  submodule 由 .gitmodules 递归处理。
+- `remote run` 新增 `--logs {none|tail|full}`：默认前台 none（不落盘、不记录 job）、
+  后台 full（合并日志全量落盘 full.log）；tail 只保留合并日志最后 200 行（tail.log）。
+- 日志统一为 stdout+stderr 合并保存（远端 combined.log 单文件同步，streamer 由两个
+  减为一个）；`remote logs --stderr` 废弃忽略；旧格式 stdout.log/stderr.log 不再读取。
+- 远端 `.remote-logs/<job_id>/` 任务结束后自动删除（streamer/waiter/launcher self-clean），
+  本地只按策略保留副本；`--logs none` 任务不产生 Job 记录。
+- 单测新增/更新（workspace 一级扫描、runner 三策略、jobs 合并日志、launcher self-clean），
+  全套 203 条测试全绿。

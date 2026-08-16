@@ -54,17 +54,30 @@ remote-plugin 仓库自身的 `.remote/state`（`remote` 入口脚本所在目�
 
 ```bash
 ./remote run <alias> --cmd "..." [--cwd <path>] [--env K=V] \
-             [--cards 0,1] [--task "编译"] [--timeout 600] [--background]
+             [--cards 0,1] [--task "编译"] [--timeout 600] [--background] \
+             [--logs none|tail|full]
 ./remote jobs [--machine <alias>]   # 任务列表（含 stale 标记）
-./remote logs <job-id> [--tail 200] [--stderr]
+./remote logs <job-id> [--tail 200]
 ./remote stop <job-id>
 ```
 
+日志保留策略 `--logs`（默认：前台 `none`、后台 `full`）：
+
+- `none`：不落盘、不记录 job（jobs 列表不出现），结果以 run 返回的合并预览
+  `preview`（stdout+stderr 截断）为准。
+- `tail`：只保留合并日志最后 200 行，落盘 `state/jobs/<job_id>/tail.log`。
+- `full`：合并日志全量落盘 `state/jobs/<job_id>/full.log`（后台默认，运行中
+  streamer 持续同步）。
+
+日志为 stdout+stderr 合并保存（`remote logs --stderr` 已废弃忽略）；远端
+`.remote-logs/` 暂存目录在任务结束后自动删除。
+
 `sync` 默认从当前目录定位 workspace（优先取最近的 `.remote` 根目录），直接同步到远端
-`workspace_root`，不再创建或选择 `main` 目录。快照会递归发现 workspace 内的 Git 仓库，
-并纳入各仓库通过 `git worktree` 注册且位于 workspace 内的 worktree；普通目录仍遵循所属
-仓库的 `.gitignore` 规则。同步结果中的 `bundle_transfer` 会报告每个 repo 的 `full`、
-`delta` 或 `skip` 决策。
+`workspace_root`，不再创建或选择 `main` 目录。仓库发现只扫描 workspace 一级目录
+（root 本身 + 直接子目录的 `.git`）；已注册的 worktree 由各仓库
+`git worktree list` 查询纳入，submodule 由 `.gitmodules` 递归处理。普通目录仍遵循
+所属仓库的 `.gitignore` 规则。同步结果中的 `bundle_transfer` 会报告每个 repo 的
+`full`、`delta` 或 `skip` 决策。
 
 例如将 `vllm-seu` 的分支 worktree 放在 workspace 内：
 
@@ -89,7 +102,9 @@ git -C vllm-seu worktree add -b feature .worktrees/vllm-seu-feature
 ## 输出契约
 
 - 进度/事件：stderr，单行 JSON（如 `{"phase":"ready"}`）。
-- 最终结果：stdout，单行 JSON（含 `status`/`exit_code`/`job_id` 等）。
+- 最终结果：stdout，单行 JSON（含 `status`/`exit_code`/`preview` 等）。
+  `--logs none`（前台默认）不生成 Job 记录，结果不含 `job_id`；保留日志的任务
+  含 `job_id`/`logs`/`log`（合并日志相对路径）等字段。
 - 错误：stdout 单行 JSON `{"status":"error","error":"..."}`，exit=1，无堆栈。
 
 ## 配套

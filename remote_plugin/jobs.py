@@ -36,7 +36,12 @@ _last_seq: int = 0
 
 @dataclass
 class Job:
-    """一条远程任务记录（PRD 2.4；remote_pid/remote_log_dir 为内部辅助字段）。"""
+    """一条远程任务记录（PRD 2.4；remote_pid/remote_log_dir 为内部辅助字段）。
+
+    ``logs`` 为日志保留策略（none|tail|full；空=旧记录）；``log`` 为本地
+    合并日志文件相对路径（tail.log/full.log）。stdout_log/stderr_log 仅
+    存在于旧格式记录，新记录不再使用。
+    """
 
     job_id: str = ""
     machine: str = ""
@@ -53,6 +58,8 @@ class Job:
     stderr_log: str = ""
     remote_pid: int | None = None
     remote_log_dir: str = ""
+    logs: str = ""
+    log: str = ""
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -231,11 +238,15 @@ def running_jobs(machine: str) -> list[Job]:
 # ---- 日志 ----
 
 def job_tail(job_id: str, tail: int, stream: str) -> str:
-    """读本地日志（不 SSH）；stream 为 ``stdout``|``stderr``，返回最后 tail 行。"""
-    load_job(job_id)
-    if stream not in ("stdout", "stderr"):
-        raise _config.RemotePluginError(f"stream 必须是 stdout|stderr，实际 {stream!r}")
-    path = job_dir(job_id) / f"{stream}.log"
+    """读本地合并日志（tail.log/full.log），返回最后 tail 行。
+
+    ``stream`` 参数已废弃（stdout/stderr 合并保存，不区分），保留仅为
+    兼容旧调用；旧格式记录（stdout.log/stderr.log 分离）不再读取。
+    """
+    job = load_job(job_id)
+    if not job.log:
+        return ""
+    path = job_dir(job_id) / Path(job.log).name
     if not path.is_file():
         return ""
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -303,7 +314,7 @@ def _follow_remote(job: Job, stream: str) -> None:
             f"无法解析 job {job.job_id} 的机器 {job.machine!r}（配置缺失）"
         )
     endpoint = _config.resolve_endpoint(machine, _config.state_dir())
-    remote_log = shlex.quote(f"{job.remote_log_dir}/{stream}.log")
+    remote_log = shlex.quote(f"{job.remote_log_dir}/combined.log")
     done = shlex.quote(f"{job.remote_log_dir}/done")
     script = (
         f"tail -F -n +1 {remote_log} &\n"
@@ -316,8 +327,9 @@ def _follow_remote(job: Job, stream: str) -> None:
     subprocess.run(ssh_argv(endpoint, script))
 
 
-def _follow_local(job_id: str, stream: str) -> None:
-    path = job_dir(job_id) / f"{stream}.log"
+def _follow_local(job: Job) -> None:
+    """轮询本地合并日志（tail.log/full.log），直到 job 结束。"""
+    path = job_dir(job.job_id) / (Path(job.log).name if job.log else "")
     pos = 0
     while True:
         data = path.read_bytes() if path.is_file() else b""
@@ -326,7 +338,7 @@ def _follow_local(job_id: str, stream: str) -> None:
             sys.stdout.buffer.flush()
             pos = len(data)
         try:
-            cur = load_job(job_id)
+            cur = load_job(job.job_id)
         except _config.RemotePluginError:
             break
         if cur.status != "running":
@@ -339,7 +351,7 @@ def _follow(job: Job, stream: str) -> None:
     if job.remote_log_dir and job.status == "running":
         _follow_remote(job, stream)
     else:
-        _follow_local(job.job_id, stream)
+        _follow_local(job)
 
 
 # ---- CLI handlers ----
@@ -350,15 +362,14 @@ def cli_jobs(args) -> dict:
 
 def cli_logs(args) -> dict | None:
     job = load_job(args.job_id)
-    stream = "stderr" if args.stderr else "stdout"
     if args.follow:
-        _follow(job, stream)
+        _follow(job, "merged")
         return None
-    text = job_tail(args.job_id, args.tail, stream)
+    text = job_tail(args.job_id, args.tail, "merged")
     return {
         "job_id": job.job_id,
         "status": job.status,
-        "stream": stream,
+        "stream": "merged",
         "tail": args.tail,
         "log": text,
     }

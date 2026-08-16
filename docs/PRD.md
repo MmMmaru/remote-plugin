@@ -128,16 +128,18 @@ CLI/API 暴露 `worktree` 参数。
   "exit_code": null,
   "started_at": "...",
   "finished_at": null,
-  "stdout_log": "state/jobs/j-20260813-140530-01/stdout.log",
-  "stderr_log": "state/jobs/j-20260813-140530-01/stderr.log"
+  "logs": "none|tail|full",
+  "log": "state/jobs/j-20260813-140530-01/full.log"
 }
 ```
 
 - `job_id` 按时间生成：`j-<yyyyMMdd>-<HHmmss>-<两位序号>`，可读、可排序，序号解决同秒冲突
 - `cards` 记录该任务占用的 NPU 卡号（来自 `--cards` 参数或 `ASCEND_RT_VISIBLE_DEVICES`），`machines` 查询据此展示**卡级占用**；不指定则为整机或未声明
 - `owner` / `task` 记录占用者与用途，是 `machines` 占用展示的依据（见 2.2）；`owner` 默认取环境变量中的 session 标识，缺省为本地用户名
-- 前台命令同样生成 Job 记录，便于审计与日志回看
-- 日志全文落盘本地状态目录，终端/agent 只看到截断预览，全文用 `logs` 查询
+- `logs` 为日志保留策略（默认：前台 `none`、后台 `full`）；`log` 为本地合并日志
+  相对路径（`tail.log`/`full.log`）。`none` 不落盘、不记录 Job
+- 日志为 stdout/stderr 合并保存；`tail` 只保留最后 200 行，`full` 全量；远端
+  `.remote-logs/` 暂存目录任务结束后删除
 
 ### 2.5 机器档案（env doc）
 
@@ -243,11 +245,12 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 - **CLI**：`remote run <alias> --cmd "..." [--cwd <path>] [--env K=V ...] [--cards 0,1] [--task "..."] [--timeout 600] [--background]`
 - **内核函数**：`run_remote(machine: Machine, command: str, cwd: str | None, env: dict, cards: list[int] | None, task: str | None, timeout_sec: int, background: bool) -> Job`
 - **功能**：经 ssh 在容器内执行命令；默认 cwd 为 workspace_root；`--background` 立即返回 job_id
-- **输出（前台）**：截断后的 stdout/stderr 预览 + exit_code + 日志文件路径（预览 head/tail 各 4000 字符，无多层 envelope）
+- **输出（前台）**：合并截断预览 `preview` + exit_code；默认 `--logs none` 不记录
+  Job、返回无 job_id（预览 head/tail 各 4000 字符，无多层 envelope）
 
 ### 5.2 任务与日志
 
-- **CLI**：`remote jobs [--machine <alias>]` / `remote logs <job-id> [--tail 200] [--stderr]` / `remote stop <job-id>`
+- **CLI**：`remote jobs [--machine <alias>]` / `remote logs <job-id> [--tail 200]`（`--stderr` 已废弃，日志合并保存）/ `remote stop <job-id>`
 - **内核函数**：`jobs(machine: str | None) -> list[Job]`、`job_tail(job_id: str, tail: int, stream: str) -> str`、`job_stop(job_id: str) -> Job`
 - 任务列表与详情统一走 `jobs` 一个入口，可按 machine 过滤，含 running 任务的机器与卡占用
 - 日志全文落盘 `state/jobs/<job-id>/`，本地查询不再 SSH（`--follow` 实时跟踪除外）

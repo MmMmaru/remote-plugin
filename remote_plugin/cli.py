@@ -88,6 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task", default=None, help="任务描述")
     p.add_argument("--timeout", type=int, default=600)
     p.add_argument("--background", action="store_true")
+    p.add_argument(
+        "--logs", choices=("none", "tail", "full"), default=None,
+        help="日志保留策略（默认：前台 none、后台 full）。"
+             "none=不落盘、不记录 job（前台默认）；tail=只留合并日志最后 200 行"
+             "（tail.log）；full=合并日志全量保留（full.log，后台默认）",
+    )
 
     p = sub.add_parser("jobs", help="任务列表")
     p.add_argument("--machine", default=None)
@@ -95,7 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("logs", help="查询任务日志")
     p.add_argument("job_id")
     p.add_argument("--tail", type=int, default=200)
-    p.add_argument("--stderr", action="store_true")
+    p.add_argument("--stderr", action="store_true",
+                   help="已废弃：日志为 stdout/stderr 合并保存，此参数被忽略")
     p.add_argument("--follow", action="store_true")
 
     p = sub.add_parser("stop", help="停止任务")

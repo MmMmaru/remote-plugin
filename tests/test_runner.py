@@ -59,9 +59,10 @@ class TestPreviewText(unittest.TestCase):
 
 
 class TestRunForeground(_Base):
-    """spec T3 e2e 步骤2：fake ssh 前台截断预览（>4000 字符 head/tail）。"""
+    """前台 run：默认 none（不落盘、不记录 job），显式 tail/full 才保留。"""
 
-    def test_preview_and_logs(self):
+    def test_foreground_default_none_no_job_record(self):
+        """默认前台 logs=none：不写日志文件、不写 meta.json，仅返回合并预览。"""
         out = b"__RP_PID__=4242\n" + b"x" * 5000
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=out,
                                                               stderr=b"y" * 123)):
@@ -71,26 +72,52 @@ class TestRunForeground(_Base):
         self.assertEqual(job.exit_code, 0)
         self.assertEqual(job.remote_pid, 4242)
         self.assertEqual(job.cwd, "/ws")
-        self.assertEqual(job.stdout_log, f"state/jobs/{job.job_id}/stdout.log")
+        self.assertEqual(job.logs, "none")
+        self.assertEqual(job.log, "")
+        self.assertFalse((self.state / "jobs" / job.job_id).exists())
+        # 合并预览：stdout 段在前，stderr 段在后
+        self.assertTrue(job.preview["truncated"])
+        self.assertEqual(job.preview["head"], "x" * 4000)
+        self.assertTrue(job.preview["tail"].endswith("y" * 123))
+
+    def test_foreground_full_keeps_merged_log(self):
+        out = b"__RP_PID__=4242\n" + b"x" * 5000
+        with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=out,
+                                                              stderr=b"y" * 123)):
+            job = runner.run_remote(self.machine, "echo hi", None, {}, None,
+                                    None, 600, False, logs="full")
+        self.assertEqual(job.status, "done")
+        self.assertEqual(job.logs, "full")
+        self.assertEqual(job.log, f"state/jobs/{job.job_id}/full.log")
         d = self.state / "jobs" / job.job_id
-        self.assertEqual((d / "stdout.log").read_bytes(), b"x" * 5000)  # 标记行已剥离
-        self.assertEqual((d / "stderr.log").read_bytes(), b"y" * 123)
-        self.assertTrue(job.stdout_preview["truncated"])
-        self.assertEqual(job.stdout_preview["head"], "x" * 4000)
-        self.assertEqual(job.stdout_preview["tail"], "x" * 4000)
-        self.assertFalse(job.stderr_preview["truncated"])
-        self.assertEqual(job.stderr_preview["head"], "y" * 123)
-        meta = json.loads((self.state / "jobs" / job.job_id / "meta.json").read_text())
+        self.assertEqual((d / "full.log").read_bytes(),
+                         b"x" * 5000 + b"\n" + b"y" * 123)  # stdout 段 + 换行 + stderr 段
+        meta = json.loads((d / "meta.json").read_text())
         self.assertEqual(meta["status"], "done")
         self.assertEqual(meta["exit_code"], 0)
+        self.assertEqual(meta["logs"], "full")
+
+    def test_foreground_tail_keeps_last_lines(self):
+        out = b"__RP_PID__=1\n" + b"".join(f"o{i}\n".encode() for i in range(250))
+        with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=out,
+                                                              stderr=b"e\n")):
+            job = runner.run_remote(self.machine, "echo hi", None, {}, None,
+                                    None, 600, False, logs="tail")
+        self.assertEqual(job.log, f"state/jobs/{job.job_id}/tail.log")
+        d = self.state / "jobs" / job.job_id
+        lines = (d / "tail.log").read_bytes().splitlines()
+        self.assertEqual(len(lines), runner.TAIL_LOG_LINES)  # 只留最后 200 行
+        self.assertEqual(lines[0], b"o51")
+        self.assertEqual(lines[-1], b"e")
 
     def test_nonzero_exit_failed(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=3, stdout=b"__RP_PID__=9\nboom\n")):
-            job = runner.run_remote(self.machine, "false", None, {}, None, None, 600, False)
+            job = runner.run_remote(self.machine, "false", None, {}, None, None, 600, False,
+                                    logs="full")
         self.assertEqual(job.status, "failed")
         self.assertEqual(job.exit_code, 3)
         d = self.state / "jobs" / job.job_id
-        self.assertEqual((d / "stdout.log").read_bytes(), b"boom\n")
+        self.assertEqual((d / "full.log").read_bytes(), b"boom\n")
 
     def test_timeout_status_and_cleanup(self):
         err = ssh.SSHError("ssh 执行超时（>600s）")
@@ -126,6 +153,7 @@ class TestRunForeground(_Base):
 
 class TestRunBackground(_Base):
     def test_returns_immediately_with_pid(self):
+        """后台默认 logs=full：单个 streamer 同步合并日志，结束后清理远端。"""
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=777\n")), \
                 mock.patch.object(runner, "_spawn_streamer", return_value=None) as spawn:
             job = runner.run_remote(self.machine, "sleep 600", None, {}, None,
@@ -133,13 +161,45 @@ class TestRunBackground(_Base):
         self.assertEqual(job.status, "running")
         self.assertEqual(job.remote_pid, 777)
         self.assertEqual(job.cwd, "/ws")
+        self.assertEqual(job.logs, "full")
+        self.assertEqual(job.log, f"state/jobs/{job.job_id}/full.log")
         self.assertEqual(job.remote_log_dir, f"/ws/.remote-logs/{job.job_id}")
-        self.assertEqual(spawn.call_count, 2)
+        self.assertEqual(spawn.call_count, 1)  # 之前是两个 streamer，现在合并为一个
+        args, kwargs = spawn.call_args
+        self.assertEqual(args[1], f"/ws/.remote-logs/{job.job_id}/combined.log")
+        self.assertEqual(args[3], self.state / "jobs" / job.job_id / "full.log")
+        self.assertEqual(kwargs["cleanup_dir"], f"/ws/.remote-logs/{job.job_id}")
         meta = json.loads((self.state / "jobs" / job.job_id / "meta.json").read_text())
         self.assertEqual(meta["status"], "running")
         self.assertEqual(meta["remote_pid"], 777)
         # advisory 占用提示包含自己
         self.assertEqual([r["job_id"] for r in job.running], [job.job_id])
+
+    def test_background_tail_uses_waiter_not_streamer(self):
+        """后台 --logs tail：不启动 streamer，只留结束后的 tail.log。"""
+        with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=9\n")), \
+                mock.patch.object(runner, "_spawn_tail_waiter", return_value=None) as waiter, \
+                mock.patch.object(runner, "_spawn_streamer", return_value=None) as spawn:
+            job = runner.run_remote(self.machine, "sleep 600", None, {}, None,
+                                    "t", 600, True, logs="tail")
+        self.assertEqual(job.log, f"state/jobs/{job.job_id}/tail.log")
+        self.assertEqual(spawn.call_count, 0)
+        self.assertEqual(waiter.call_count, 1)
+        args, kwargs = waiter.call_args
+        self.assertEqual(args[1], f"/ws/.remote-logs/{job.job_id}/combined.log")
+        self.assertEqual(args[3], self.state / "jobs" / job.job_id / "tail.log")
+        self.assertEqual(args[4], f"/ws/.remote-logs/{job.job_id}")
+
+    def test_background_none_no_job_record(self):
+        """后台 --logs none：不记录 job、不启动任何同步进程。"""
+        with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=9\n")), \
+                mock.patch.object(runner, "_spawn_streamer", return_value=None) as spawn:
+            job = runner.run_remote(self.machine, "sleep 600", None, {}, None,
+                                    None, 600, True, logs="none")
+        self.assertEqual(job.logs, "none")
+        self.assertEqual(job.log, "")
+        self.assertFalse((self.state / "jobs" / job.job_id).exists())
+        self.assertEqual(spawn.call_count, 0)
 
     def test_launch_failure_marks_failed(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=1, stdout=b"")), \
@@ -174,6 +234,27 @@ class TestLauncherLocal(unittest.TestCase):
             self.assertIn(b"hello-from-cmd", cp.stdout)
             self.assertTrue((log / "cmd.sh").is_file())
 
+    def test_foreground_self_clean_removes_log_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "log"
+            script = runner._launcher("printf 'hi\\n'", "/tmp", {}, msys_path(log),
+                                      600, False, self_clean=True)
+            cp = self._bash(script)
+            self.assertEqual(cp.returncode, 0)
+            self.assertFalse(log.exists())  # 远端日志目录已自清理
+
+    def test_background_self_clean_removes_log_dir_after_done(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "log"
+            script = runner._launcher("sleep 1", "/tmp", {}, msys_path(log),
+                                      5, True, self_clean=True)
+            cp = self._bash(script)
+            self.assertEqual(cp.returncode, 0)
+            deadline = time.time() + 8
+            while time.time() < deadline and log.exists():
+                time.sleep(0.2)
+            self.assertFalse(log.exists())  # waiter 写 done 后自清理
+
     def test_background_timeout_kills_process_group(self):
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / "log"
@@ -186,6 +267,7 @@ class TestLauncherLocal(unittest.TestCase):
                 time.sleep(0.2)
             self.assertTrue((log / "done").exists())
             self.assertEqual((log / "status").read_text().strip(), "timeout")
+            self.assertTrue((log / "combined.log").is_file())  # 合并日志
             rc = subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode
             self.assertNotEqual(rc, 0)  # 进程组已死
 
@@ -193,22 +275,37 @@ class TestLauncherLocal(unittest.TestCase):
 class TestCliRun(_Base):
     def test_unknown_alias_raises(self):
         args = mock.Mock(alias="nope", cmd="x", cwd=None, env={},
-                         cards=None, task=None, timeout=600, background=False)
+                         cards=None, task=None, timeout=600, background=False,
+                         logs=None)
         with mock.patch.object(config, "load_machines", return_value={"m1": self.machine}):
             with self.assertRaises(config.ConfigError):
                 runner.cli_run(args)
 
-    def test_cli_run_payload(self):
+    def test_cli_run_none_payload(self):
+        """默认前台 none：返回 status/exit_code/preview/logs，无 job_id。"""
         args = mock.Mock(alias="m1", cmd="echo hi", cwd=None, env={},
-                         cards=None, task="t", timeout=600, background=False)
+                         cards=None, task="t", timeout=600, background=False,
+                         logs=None)
         with mock.patch.object(config, "load_machines", return_value={"m1": self.machine}), \
                 mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=5\nhi\n")):
             payload = runner.cli_run(args)
         self.assertEqual(payload["status"], "done")
         self.assertEqual(payload["exit_code"], 0)
-        self.assertIn("stdout_preview", payload)
+        self.assertEqual(payload["logs"], "none")
+        self.assertEqual(payload["preview"]["head"], "hi\n")
+        self.assertNotIn("job_id", payload)
+
+    def test_cli_run_full_payload_includes_job_id(self):
+        args = mock.Mock(alias="m1", cmd="echo hi", cwd=None, env={},
+                         cards=None, task="t", timeout=600, background=False,
+                         logs="full")
+        with mock.patch.object(config, "load_machines", return_value={"m1": self.machine}), \
+                mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=5\nhi\n")):
+            payload = runner.cli_run(args)
+        self.assertEqual(payload["logs"], "full")
+        self.assertIn("job_id", payload)
+        self.assertEqual(payload["preview"]["head"], "hi\n")
         self.assertIn("running", payload)
-        self.assertEqual(payload["stdout_preview"]["head"], "hi\n")
 
 
 if __name__ == "__main__":
