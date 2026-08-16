@@ -1,11 +1,11 @@
 """Workspace 根定位与 Git 仓库/worktree 发现。
 
-文件筛选仍由各仓库的 Git 规则负责；本模块只发现同步树中的仓库节点。
-已注册且位于 workspace 内的 worktree 是唯一允许越过父仓库 ignore 的节点。
+仓库只从 workspace 一级目录扫描（root 本身 + 直接子目录的 .git）；
+已注册且位于 workspace 内的 worktree 是唯一允许越过父仓库 ignore 的节点，
+由 owner 仓库的 ``git worktree list`` 查询获得，不依赖目录深度。
 """
 from __future__ import annotations
 
-import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,13 +51,22 @@ def find_workspace_root(start: Path | None = None) -> Path:
 
 
 def _git_roots(root: Path) -> list[Path]:
-    """递归发现 .git 目录或文件；不进入 Git 元数据目录。"""
+    """只扫描 workspace 一级目录发现 .git（目录或 worktree 标记文件）。
+
+    深度 >=2 的仓库不再递归发现：submodule 由父仓库的 .gitmodules 递归
+    处理，已注册 worktree 由 owner 的 ``git worktree list`` 查询覆盖。
+    """
+    root = Path(root).resolve()
     found: list[Path] = []
-    for directory, dirnames, filenames in os.walk(root):
-        current = Path(directory)
-        if ".git" in dirnames or ".git" in filenames:
-            found.append(current.resolve())
-        dirnames[:] = [name for name in dirnames if name != ".git"]
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        children = []
+    for candidate in [root, *children]:
+        if not candidate.is_dir():
+            continue
+        if (candidate / ".git").exists():  # .git 目录或 worktree 的 .git 文件
+            found.append(candidate.resolve())
     return sorted(set(found), key=lambda path: (len(path.parts), str(path)))
 
 
@@ -107,11 +116,9 @@ def _registered_worktrees(
 def _discover_repository_data(
     workspace_root: Path,
 ) -> tuple[list[RepositoryContext], list[str]]:
-    """发现非 ignored 仓库和 workspace 内 registered worktree。"""
+    """发现非 ignored 仓库（只扫一级目录）和 workspace 内 registered worktree。"""
     root = Path(workspace_root).resolve()
     candidates = set(_git_roots(root))
-    if (root / ".git").exists():
-        candidates.add(root)
 
     # 先对全部 Git 根查询注册表：owner 自身可能被父仓库忽略，但其已注册
     # worktree 仍是显式同步对象。最终普通仓库节点是否进入 contexts 再按 ignore 过滤。

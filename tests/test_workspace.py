@@ -84,6 +84,30 @@ class TestWorkspaceDiscovery(unittest.TestCase):
         self.assertNotIn("vllm-seu", relpaths)
         self.assertIn(".worktrees/vllm-seu-feature", relpaths)
 
+    def test_deep_unregistered_repo_not_discovered(self):
+        """只扫一级目录：深度 >=2 且未注册、非 submodule 的仓库不再被发现。"""
+        _make_repo(self.root)
+        deep = self.root / "deep" / "nested" / "repo"
+        _make_repo(deep)
+
+        contexts = workspace.discover_repositories(self.root)
+        relpaths = {item.relpath for item in contexts}
+        self.assertIn(".", relpaths)
+        self.assertNotIn("deep/nested/repo", relpaths)
+
+    def test_top_level_worktree_marker_found(self):
+        """一级目录的 .git 文件（worktree 标记）也被扫描发现。"""
+        _make_repo(self.root)
+        owner = self.root / "vllm-seu"
+        _make_repo(owner)
+        worktree = self.root / "vllm-feature"
+        _git(owner, "worktree", "add", "-b", "feature", str(worktree))
+
+        contexts = workspace.discover_repositories(self.root)
+        by_relpath = {item.relpath: item for item in contexts}
+        self.assertIn("vllm-feature", by_relpath)
+        self.assertTrue(by_relpath["vllm-feature"].is_worktree)
+
 
 if __name__ == "__main__":
     unittest.main()
