@@ -5,10 +5,12 @@
 
 - ``none``（前台默认）：不落盘、不记录 job；预览在返回 JSON 中即时给出。
 - ``tail``：只保留合并日志（stdout+stderr）最后 200 行，落盘 ``tail.log``。
-- ``full``（后台默认）：合并日志全量落盘 ``full.log``，由常驻 streamer 同步。
+- ``full``（后台默认）：合并日志全量落盘 ``full.log``。
 
-远端日志统一写合并文件 ``<workspace_root>/.remote-logs/<job_id>/combined.log``，
-任务结束后删除远端目录，本地按策略保留副本。
+远端日志统一写合并文件 ``<workspace_root>/.remote-logs/<job_id>/combined.log``；
+后台任务的日志由本地 fetcher 子进程在任务结束后一次性拉取（cat 全量 /
+tail 后 N 行），随后删除远端目录。运行中实时查看用 ``remote logs --follow``
+（直接 SSH 跟踪远端合并日志）。
 """
 from __future__ import annotations
 
@@ -62,8 +64,8 @@ def _launcher(command: str, cwd: str, env: dict, log_dir: str,
     - 后台：stdout/stderr 合并重定向到远端 ``combined.log``，waiter 负责
       超时杀进程组并写 done 标记。
     - ``self_clean``：结束后删除远端 ``log_dir``（前台任务、以及无本地
-      streamer/waiter 收尾的 ``logs=none`` 后台任务使用；有本地收尾进程的
-      任务由收尾进程在检测到 done 之后删除，避免删掉 done 标记）。
+      fetcher 收尾的 ``logs=none`` 后台任务使用；有本地 fetcher 的任务由
+      fetcher 在检测到 done 之后删除，避免删掉 done 标记）。
     """
     b64 = base64.b64encode(command.encode("utf-8")).decode("ascii")
     q_log = shlex.quote(log_dir)
@@ -215,44 +217,21 @@ def _run_foreground(job: _jobs.Job, endpoint: _config.Endpoint, env: dict,
         _jobs.save_job(job)
 
 
-def _spawn_streamer(endpoint: _config.Endpoint, remote_log: str, done_file: str,
-                    local_path: Path, cleanup_dir: str | None = None) -> None:
-    """常驻子进程：tail 远端合并日志直到 done，全文同步到本地日志文件，
-    随后 best-effort 删除远端日志目录。"""
-    script = (
-        f"tail -F -n +1 {shlex.quote(remote_log)} &\n"
-        "T=$!\n"
-        f"while [ ! -e {shlex.quote(done_file)} ]; do sleep 1; done\n"
-        'kill "$T" 2>/dev/null\n'
-        'wait "$T" 2>/dev/null\n'
-    )
-    if cleanup_dir:
-        script += f"rm -rf {shlex.quote(cleanup_dir)}\n"
-    script += "exit 0\n"
-    fh = local_path.open("wb")
-    try:
-        subprocess.Popen(
-            _jobs.ssh_argv(endpoint, script),
-            stdin=subprocess.DEVNULL,
-            stdout=fh,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
-    except OSError as e:
-        _output.progress({"warning": f"无法启动日志 streamer: {e}"})
-    finally:
-        fh.close()
-
-
-def _spawn_tail_waiter(endpoint: _config.Endpoint, remote_log: str,
+def _spawn_log_fetcher(endpoint: _config.Endpoint, remote_log: str,
                        done_file: str, local_path: Path,
-                       cleanup_dir: str) -> None:
-    """轻量子进程：等 done 后拉远端合并日志最后 TAIL_LOG_LINES 行到本地
-    tail.log，随后删除远端日志目录。运行期间本地不保留任何日志。"""
+                       cleanup_dir: str, lines: int | None = None) -> None:
+    """后台日志 fetcher 子进程：等 done 后拉取远端合并日志并删除远端目录。
+
+    ``lines`` 为 None 时拉全量（full 模式），否则只拉最后 ``lines`` 行
+    （tail 模式）。运行期间本地不保留任何日志；结束后一次性 cat/tail
+    （正常退出保证缓冲 flush，规避 tail -F 被 kill 丢块缓冲的问题）。
+    """
+    fetch = f"cat {shlex.quote(remote_log)}" if lines is None else (
+        f"tail -n {int(lines)} {shlex.quote(remote_log)}"
+    )
     script = (
         f"while [ ! -e {shlex.quote(done_file)} ]; do sleep 1; done\n"
-        f"tail -n {TAIL_LOG_LINES} {shlex.quote(remote_log)}\n"
+        f"{fetch}\n"
         f"rm -rf {shlex.quote(cleanup_dir)}\n"
         "exit 0\n"
     )
@@ -267,7 +246,7 @@ def _spawn_tail_waiter(endpoint: _config.Endpoint, remote_log: str,
             close_fds=True,
         )
     except OSError as e:
-        _output.progress({"warning": f"无法启动日志 waiter: {e}"})
+        _output.progress({"warning": f"无法启动日志 fetcher: {e}"})
     finally:
         fh.close()
 
@@ -303,11 +282,9 @@ def _start_background(job: _jobs.Job, endpoint: _config.Endpoint, env: dict,
     name = Path(job.log).name
     remote_log = f"{log_dir}/combined.log"
     done_file = f"{log_dir}/done"
-    if job.logs == "tail":
-        _spawn_tail_waiter(endpoint, remote_log, done_file, base / name, log_dir)
-    else:
-        _spawn_streamer(endpoint, remote_log, done_file, base / name,
-                        cleanup_dir=log_dir)
+    lines = None if job.logs == "full" else TAIL_LOG_LINES
+    _spawn_log_fetcher(endpoint, remote_log, done_file, base / name,
+                       log_dir, lines)
 
 
 def _fresh_job_id() -> str:

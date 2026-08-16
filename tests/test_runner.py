@@ -153,9 +153,9 @@ class TestRunForeground(_Base):
 
 class TestRunBackground(_Base):
     def test_returns_immediately_with_pid(self):
-        """后台默认 logs=full：单个 streamer 同步合并日志，结束后清理远端。"""
+        """后台默认 logs=full：fetcher 等 done 后拉全量合并日志并清理远端。"""
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=777\n")), \
-                mock.patch.object(runner, "_spawn_streamer", return_value=None) as spawn:
+                mock.patch.object(runner, "_spawn_log_fetcher", return_value=None) as fetch:
             job = runner.run_remote(self.machine, "sleep 600", None, {}, None,
                                     "占坑", 600, True)
         self.assertEqual(job.status, "running")
@@ -164,53 +164,53 @@ class TestRunBackground(_Base):
         self.assertEqual(job.logs, "full")
         self.assertEqual(job.log, f"state/jobs/{job.job_id}/full.log")
         self.assertEqual(job.remote_log_dir, f"/ws/.remote-logs/{job.job_id}")
-        self.assertEqual(spawn.call_count, 1)  # 之前是两个 streamer，现在合并为一个
-        args, kwargs = spawn.call_args
+        self.assertEqual(fetch.call_count, 1)
+        args, kwargs = fetch.call_args
         self.assertEqual(args[1], f"/ws/.remote-logs/{job.job_id}/combined.log")
         self.assertEqual(args[3], self.state / "jobs" / job.job_id / "full.log")
-        self.assertEqual(kwargs["cleanup_dir"], f"/ws/.remote-logs/{job.job_id}")
+        self.assertEqual(args[4], f"/ws/.remote-logs/{job.job_id}")
+        self.assertIsNone(args[5])  # full：拉全量
         meta = json.loads((self.state / "jobs" / job.job_id / "meta.json").read_text())
         self.assertEqual(meta["status"], "running")
         self.assertEqual(meta["remote_pid"], 777)
         # advisory 占用提示包含自己
         self.assertEqual([r["job_id"] for r in job.running], [job.job_id])
 
-    def test_background_tail_uses_waiter_not_streamer(self):
-        """后台 --logs tail：不启动 streamer，只留结束后的 tail.log。"""
+    def test_background_tail_fetches_last_lines(self):
+        """后台 --logs tail：fetcher 只拉最后 TAIL_LOG_LINES 行。"""
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=9\n")), \
-                mock.patch.object(runner, "_spawn_tail_waiter", return_value=None) as waiter, \
-                mock.patch.object(runner, "_spawn_streamer", return_value=None) as spawn:
+                mock.patch.object(runner, "_spawn_log_fetcher", return_value=None) as fetch:
             job = runner.run_remote(self.machine, "sleep 600", None, {}, None,
                                     "t", 600, True, logs="tail")
         self.assertEqual(job.log, f"state/jobs/{job.job_id}/tail.log")
-        self.assertEqual(spawn.call_count, 0)
-        self.assertEqual(waiter.call_count, 1)
-        args, kwargs = waiter.call_args
+        self.assertEqual(fetch.call_count, 1)
+        args, kwargs = fetch.call_args
         self.assertEqual(args[1], f"/ws/.remote-logs/{job.job_id}/combined.log")
         self.assertEqual(args[3], self.state / "jobs" / job.job_id / "tail.log")
         self.assertEqual(args[4], f"/ws/.remote-logs/{job.job_id}")
+        self.assertEqual(args[5], runner.TAIL_LOG_LINES)
 
     def test_background_none_no_job_record(self):
         """后台 --logs none：不记录 job、不启动任何同步进程。"""
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=0, stdout=b"__RP_PID__=9\n")), \
-                mock.patch.object(runner, "_spawn_streamer", return_value=None) as spawn:
+                mock.patch.object(runner, "_spawn_log_fetcher", return_value=None) as fetch:
             job = runner.run_remote(self.machine, "sleep 600", None, {}, None,
                                     None, 600, True, logs="none")
         self.assertEqual(job.logs, "none")
         self.assertEqual(job.log, "")
         self.assertFalse((self.state / "jobs" / job.job_id).exists())
-        self.assertEqual(spawn.call_count, 0)
+        self.assertEqual(fetch.call_count, 0)
 
     def test_launch_failure_marks_failed(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(rc=1, stdout=b"")), \
-                mock.patch.object(runner, "_spawn_streamer", return_value=None):
+                mock.patch.object(runner, "_spawn_log_fetcher", return_value=None):
             job = runner.run_remote(self.machine, "x", None, {}, None, None, 600, True)
         self.assertEqual(job.status, "failed")
         self.assertIsNotNone(job.finished_at)
 
     def test_unreachable_marks_failed(self):
         with mock.patch.object(ssh, "ssh_run", self._fake_ssh(error=ssh.SSHError("不可达"))), \
-                mock.patch.object(runner, "_spawn_streamer", return_value=None):
+                mock.patch.object(runner, "_spawn_log_fetcher", return_value=None):
             job = runner.run_remote(self.machine, "x", None, {}, None, None, 600, True)
         self.assertEqual(job.status, "failed")
 

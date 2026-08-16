@@ -66,8 +66,8 @@ remote-plugin 仓库自身的 `.remote/state`（`remote` 入口脚本所在目�
 - `none`：不落盘、不记录 job（jobs 列表不出现），结果以 run 返回的合并预览
   `preview`（stdout+stderr 截断）为准。
 - `tail`：只保留合并日志最后 200 行，落盘 `state/jobs/<job_id>/tail.log`。
-- `full`：合并日志全量落盘 `state/jobs/<job_id>/full.log`（后台默认，运行中
-  streamer 持续同步）。
+- `full`：合并日志全量落盘 `state/jobs/<job_id>/full.log`（后台默认，任务结束后
+  由本地 fetcher 一次性拉取；运行中实时跟踪用 `remote logs --follow`）。
 
 日志为 stdout+stderr 合并保存（`remote logs --stderr` 已废弃忽略）；远端
 `.remote-logs/` 暂存目录在任务结束后自动删除。
