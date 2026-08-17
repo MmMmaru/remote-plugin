@@ -16,7 +16,7 @@
 
 ## 阶段 2：子代理并行（T1–T6 全部完成）
 
-- [x] T1 machines.py + probes.py（verify/machines/status、npu-smi 探针、档案 Markdown）
+- [x] T1 machines.py + probes.py（verify/machines/status、npu-smi 探针、结构化 facts；Markdown 由人类维护）
 - [x] T2 updown.py + bootstrap.py（免密引导→docker→**pull/run/exec**→工作区初始化；无 sshd）
 - [x] T3 runner.py + jobs.py（job_id、卡占用、截断预览、stale reconcile、超时强杀）
 - [x] T4 sync_paths.py（tar|ssh 定向传输 + sha256 抽检）
@@ -104,3 +104,8 @@
   本地只按策略保留副本；`--logs none` 任务不产生 Job 记录。
 - 单测新增/更新（workspace 一级扫描、runner 三策略、jobs 合并日志、launcher self-clean），
   全套 203 条测试全绿。
+
+### 08-17 14:47
+
+- `remote verify` 改为只生成 `state/docs/<alias>.facts.json`，保留 `state/docs/<alias>.md` 给人类维护。
+- 更新机器管理文档、CLI 输出契约和回归测试；206 条 unittest 全绿。

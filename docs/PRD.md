@@ -143,7 +143,8 @@ CLI/API 暴露 `worktree` 参数。
 
 ### 2.5 机器档案（env doc）
 
-verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和 agent 直接阅读：
+verify 探测结果写成结构化 JSON `state/docs/<alias>.facts.json`，供 agent 读取；
+同名 Markdown `state/docs/<alias>.md` 留给人类维护，verify 不创建、不覆盖：
 
 - OS / 内核 / CPU / 内存 / 磁盘余量
 - 按 tags 的可选探针结果（如 `chip: ascend-*`：npu-smi 型号与卡数、每卡 HBM/AICore 占用、torch/torch_npu 版本）
@@ -170,10 +171,10 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 
 - **CLI**：`remote verify <alias>`
 - **内核函数**：`verify_machine(machine: Machine) -> VerifyResult`
-- **功能**：对单台机器执行注册验证与环境探测，写入/刷新机器档案文档
+- **功能**：对单台机器执行注册验证与环境探测，写入/刷新结构化 facts 文件；不修改人类 Markdown
 - **必做探针**：SSH 连通（BatchMode）、`uname -a`、workspace_root 存在且可写（不存在则提示需 `up`）、磁盘余量
 - **可选探针（按 tags）**：`tags.chip` 以 `ascend-` 开头 → npu-smi（并校验实测卡数与 `tags.cards` 一致）、Python/torch/torch_npu 版本；网络探针（所有机器默认开启）→ pip index 可达性、代理 env、apt mirror
-- **输出（stdout 单行 JSON）**：`{status: ok|needs_up|unreachable|degraded, facts: {...}, doc: "state/docs/<alias>.md"}`
+- **输出（stdout 单行 JSON）**：`{status: ok|needs_up|unreachable|degraded, facts: {...}, facts_file: "state/docs/<alias>.facts.json"}`
 - 只读，不做任何修复性变更
 
 ### 3.3 查询
@@ -289,7 +290,8 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 ~/.config/remote-plugin/machines.json  # 用户级机器注册
 <repo>/.remote/state/
   jobs/<job-id>/{meta,stdout,stderr}*.json|log
-  docs/<alias>.md                   # 机器档案
+  docs/<alias>.facts.json           # verify 生成的结构化机器事实
+  docs/<alias>.md                   # 人类维护的机器补充说明
   endpoints/<alias>.json            # 模式 A 解析出的容器直连端点
 ```
 
@@ -305,7 +307,7 @@ verify 探测结果写成 Markdown 文档 `state/docs/<alias>.md`，供人类和
 - 远程 read/write/edit/multi_edit/apply_patch 工具（文件操作在本地完成，远端只过 run 与 sync）
 - per-agent 独立容器；session 三件套（worktree+容器+lease 合体）
 - 独立 lease 数据与 claim/release 命令（占用由 Job 表达）
-- 镜像选择策略（rc/main/stable 推断）、apt/pip 源写死逻辑进内核（只写进机器档案文档）
+- 镜像选择策略（rc/main/stable 推断）、apt/pip 源写死逻辑进内核（只写进机器 facts）
 - sync 隐式触发编译、consent 多道闸
 
 ## 9. 验收标准

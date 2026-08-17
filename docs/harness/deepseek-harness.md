@@ -21,7 +21,8 @@ agent 侧最小接入（可整段复制）：
    ./remote machines
    ./remote sync <alias>
    ./remote run <alias> --background --task "<做什么>" --cards 0,1 --cmd "<命令>" --timeout <秒>
-3. 编译/安装前读 state/docs/<alias>.md 档案中的 pip index / proxy；
+3. 编译/安装前读 state/docs/<alias>.facts.json 中的 pip index / proxy；如存在，再读
+   state/docs/<alias>.md 中的人类补充说明；
    环境不确定时停下来问人类，不盲目重试或换源。
 ```
 

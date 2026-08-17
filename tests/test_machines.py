@@ -81,24 +81,16 @@ class _Isolated(unittest.TestCase):
 
 
 class TestVerifyMachine(_Isolated):
-    def test_ok_status_and_doc(self):
+    def test_ok_status_and_facts_file(self):
         m = _machine()
         with mock.patch.object(
             ssh, "ssh_run", return_value=_proc(0, json.dumps(_ok_facts()))
         ) as run:
             result = machines.verify_machine(m)
         self.assertEqual(result.status, "ok")
-        self.assertTrue(result.doc.is_file())
-        text = result.doc.read_text(encoding="utf-8")
-        self.assertIn("- verify_status: ok", text)
-        self.assertIn("910B4", text)
-        self.assertIn("pip index", text)
-        # 每卡占用写入档案文档 + 结构化 sidecar
-        self.assertIn("每卡占用", text)
-        self.assertIn("3425 / 65536", text)
-        sidecar = result.doc.parent / f"{result.doc.stem}.facts.json"
-        self.assertTrue(sidecar.is_file())
-        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        self.assertTrue(result.facts_path.is_file())
+        self.assertFalse((self.state / "docs" / "a2.md").exists())
+        payload = json.loads(result.facts_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["verify_status"], "ok")
         self.assertEqual(payload["npu_cards"][0]["hbm_used_mb"], 3425)
         # 脚本注入了 WS_ROOT / EXPECTED_CARDS
@@ -127,8 +119,9 @@ class TestVerifyMachine(_Isolated):
             result = machines.verify_machine(m)
         self.assertEqual(result.status, "unreachable")
         self.assertIn("error", result.facts)
-        self.assertTrue(result.doc.is_file())
-        self.assertIn("unreachable", result.doc.read_text(encoding="utf-8"))
+        self.assertTrue(result.facts_path.is_file())
+        facts = json.loads(result.facts_path.read_text(encoding="utf-8"))
+        self.assertEqual(facts["verify_status"], "unreachable")
 
     def test_unreachable_on_rc255(self):
         m = _machine()
@@ -145,7 +138,7 @@ class TestVerifyMachine(_Isolated):
         with mock.patch.object(ssh, "ssh_run", return_value=_proc(0, json.dumps(facts))):
             result = machines.verify_machine(m)
         self.assertEqual(result.status, "needs_up")
-        self.assertIn("需先执行 up", result.doc.read_text(encoding="utf-8"))
+        self.assertEqual(result.facts_path.suffix, ".json")
 
     def test_degraded_on_cards_mismatch(self):
         m = _machine()
@@ -153,7 +146,19 @@ class TestVerifyMachine(_Isolated):
         with mock.patch.object(ssh, "ssh_run", return_value=_proc(0, json.dumps(facts))):
             result = machines.verify_machine(m)
         self.assertEqual(result.status, "degraded")
-        self.assertIn("实测卡数 4 ≠ 配置 8", result.doc.read_text(encoding="utf-8"))
+        payload = json.loads(result.facts_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["npu_count"], 4)
+        self.assertEqual(payload["verify_status"], "degraded")
+
+    def test_verify_preserves_human_markdown(self):
+        m = _machine()
+        doc = self.state / "docs" / "a2.md"
+        doc.parent.mkdir(parents=True)
+        original = "# 人类维护的机器说明\n\n不要被 verify 覆盖。\n"
+        doc.write_text(original, encoding="utf-8")
+        with mock.patch.object(ssh, "ssh_run", return_value=_proc(0, json.dumps(_ok_facts()))):
+            machines.verify_machine(m)
+        self.assertEqual(doc.read_text(encoding="utf-8"), original)
 
     def test_degraded_on_npu_smi_unavailable(self):
         m = _machine()
@@ -299,7 +304,8 @@ class TestHandlers(_Isolated):
             result = machines.cli_verify(self._args(alias="ghost"))
         self.assertEqual(result["status"], "unreachable")
         self.assertIn("未注册", result["facts"]["error"])
-        self.assertTrue(result["doc"].endswith("ghost.md"))
+        self.assertTrue(result["facts_file"].endswith("ghost.facts.json"))
+        self.assertFalse((self.state / "docs" / "ghost.md").exists())
 
     def test_cli_verify_known_alias(self):
         with mock.patch.object(config, "load_machines", return_value={"a": _machine(alias="a")}):
@@ -307,7 +313,7 @@ class TestHandlers(_Isolated):
                 result = machines.cli_verify(self._args(alias="a"))
         self.assertEqual(result["status"], "ok")
         self.assertIn("facts", result)
-        self.assertIn("doc", result)
+        self.assertIn("facts_file", result)
 
     def test_cli_machines_shape(self):
         with mock.patch.object(config, "load_machines", return_value={"a": _machine(alias="a")}):
@@ -332,8 +338,8 @@ class TestHandlers(_Isolated):
         self.assertEqual(cards[0]["hbm_total_mb"], 65536)
         self.assertIsNone(cards[1]["aicore_pct"])  # 解析不出时记 null
 
-    def test_verify_status_md_fallback_without_sidecar(self):
-        """旧档案（仅 md，无 sidecar）仍能读出 status/verified_at，npu_cards 为 None。"""
+    def test_verify_status_md_fallback_without_facts(self):
+        """旧档案（仅 md，无 facts）仍能读出 status/verified_at，npu_cards 为 None。"""
         doc = self.state / "docs" / "a.md"
         doc.parent.mkdir(parents=True)
         doc.write_text(

@@ -33,7 +33,7 @@ T0 自验：compileall + spec.md T0 的 4 条 **[本地]** 步骤。通过后提
 
 各任务 `{{item}}`：
 
-- **T1**：实现 spec.md T1——`machines.py` + `probes.py`（verify/machines/status、tags 探针、机器档案 Markdown）
+- **T1**：实现 spec.md T1——`machines.py` + `probes.py`（verify/machines/status、tags 探针、结构化 facts）
 - **T2**：实现 spec.md T2——`updown.py` + `bootstrap.py`（免密引导→docker→pull/run/exec 进容器→工作区初始化，幂等，密码不落盘）
 - **T3**：实现 spec.md T3——`runner.py` + `jobs.py`（时间格式 job_id、卡占用、截断预览、stale reconcile、超时强杀）
 - **T4**：实现 spec.md T4——`sync_paths.py`（tar|ssh 定向传输 + sha256 抽检）
@@ -72,4 +72,4 @@ T0 自验：compileall + spec.md T0 的 4 条 **[本地]** 步骤。通过后提
 ## 变更规则
 
 - 实施中发现 spec 与现实冲突：先改 spec.md 再改代码，保持文档即时正确
-- 新增机器：手写进 `.remote/machines.json`，跑 `remote verify` 即可
+- 新增机器：手写进 `.remote/machines.json`，跑 `remote verify <alias>` 生成 facts；如需补充机器说明，再手写 `state/docs/<alias>.md`

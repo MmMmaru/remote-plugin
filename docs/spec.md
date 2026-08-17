@@ -92,11 +92,12 @@ remote-plugin/
 **关键函数**：
 
 - `machines.verify_machine(machine: Machine) -> VerifyResult`
-  - 输出 `{status: ok|needs_up|unreachable|degraded, facts: dict, doc: Path}`
+  - 输出 `{status: ok|needs_up|unreachable|degraded, facts: dict, facts_path: Path}`
   - 必做探针：SSH 连通、uname、workspace_root 可写（缺失 → `needs_up`）、磁盘余量
   - tags 驱动：`chip` 以 `ascend-` 开头 → npu-smi 型号/卡数（与 `tags.cards` 交叉校验，不符 → `degraded`）、torch/torch_npu 版本
   - 网络探针（所有机器）：pip index 可达性与延迟、代理 env、apt mirror
-  - 结果写 `state/docs/<alias>.md`（人类与 agent 可读的 Markdown）
+  - 结果写 `state/docs/<alias>.facts.json`（agent 读取的结构化 facts）；
+    `state/docs/<alias>.md` 由人类维护，verify 不创建、不覆盖
 - `machines.list_machines() -> list[MachineView]`：alias/mode/tags/占用（读 state/jobs 的 running 记录）/最近 verify 结论
 - `machines.machine_status(alias: str, probe: bool) -> MachineStatus`：`probe=True` 实时 SSH 查负载与 npu-smi
 - `probes.build_probe_script(tags: dict) -> str`：纯函数，可单测
@@ -105,7 +106,7 @@ remote-plugin/
 
 1. **[本地]** `build_probe_script` 单测：`{"chip":"ascend-a2","cards":8}` → 脚本含 npu-smi 与卡数校验；`{"chip":"nvidia-h100"}` → 不含 npu-smi
 2. **[真机-串行，T2 之后]** `remote verify 192.168.9.166`
-   - 预期：`status: ok`；`state/docs/192.168.9.166.md` 含 A2 SoC 型号、实测 8 卡、torch/torch_npu 版本、pip index 延迟、代理 env、磁盘余量
+   - 预期：`status: ok`；`state/docs/192.168.9.166.facts.json` 含 A2 SoC 型号、实测 8 卡、torch/torch_npu 版本、pip index 延迟、代理 env、磁盘余量
 3. **[真机-串行]** `remote machines` → 该机行显示 chip=ascend-a2/cards=8/os=linux、占用（来自 jobs）、verify=ok
 4. **[真机-串行]** 临时把 machines.json 的 `cards` 改为 4 → verify 报 `degraded` 并注明"实测 8 ≠ 配置 4"；改回
 5. **[真机-串行]** `remote status 192.168.9.166 --probe` → 实时负载与 npu-smi 利用率
@@ -234,7 +235,7 @@ docs/harness/{codex.md, claude-code.md, deepseek-harness.md}
 
 **SKILL.md 要点**：
 
-- 远程工作一律走 `remote` CLI，不裸用 ssh；先读 `state/docs/<alias>.md` 机器档案
+- 远程工作一律走 `remote` CLI，不裸用 ssh；先读 `state/docs/<alias>.facts.json`，再按需读人类维护的 `state/docs/<alias>.md`
 - 干活前 `remote machines` 查占用；长任务 `--background --task "..." --cards ...` 声明占用
 - 编译/安装前确认档案中的 pip index、proxy；**环境不确定就问人类**，不盲目重试换源
 - sync 只同步代码，编译用 `remote run` 显式发起

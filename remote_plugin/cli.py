@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("install", help="将 remote 入口原子安装到 ~/.local/bin")
 
-    p = sub.add_parser("verify", help="验证单台机器并写机器档案")
+    p = sub.add_parser("verify", help="验证单台机器并写结构化 facts（不覆盖 Markdown）")
     p.add_argument("alias")
 
     sub.add_parser("machines", help="列出所有机器一览")

@@ -36,7 +36,7 @@ remote-plugin 仓库自身的 `.remote/state`（`remote` 入口脚本所在目�
 
 ```bash
 ./remote up <alias> [--password-env NAME | --password-stdin]  # 从0拉起：pull→run→exec（幂等）
-./remote verify <alias>          # 环境探测，写 state/docs/<alias>.md 机器档案
+./remote verify <alias>          # 环境探测，写 state/docs/<alias>.facts.json
 ./remote machines                # 所有机器一览：tags、占用、最近 verify 结论
 ./remote status <alias> [--probe]  # 单机详情；--probe 实时查负载/NPU利用率/显存
 ./remote down <alias>            # 停删受管容器（默认不执行，先问人类）
@@ -111,7 +111,8 @@ git -C vllm-seu worktree add -b feature .worktrees/vllm-seu-feature
 
 - `docs/PRD.md` / `docs/spec.md` / `docs/workflow.md`：需求、任务拆分与执行流程。
 - `skills/remote-plugin/SKILL.md`：给 agent 的使用指引（经 harness 的 bash 调 `remote`）。
-- `state/docs/<alias>.md`：机器档案（OS/芯片/卡数/网络事实），干活前先读。
+- `state/docs/<alias>.facts.json`：verify 生成的结构化机器事实，干活前先读。
+- `state/docs/<alias>.md`：人类维护的补充说明，verify 不创建、不覆盖。
 
 ## 开发
 

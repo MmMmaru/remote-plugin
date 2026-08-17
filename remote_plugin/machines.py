@@ -42,7 +42,7 @@ class VerifyResult:
 
     status: str
     facts: dict
-    doc: Path
+    facts_path: Path
 
 
 @dataclass
@@ -89,7 +89,9 @@ class MachineStatus:
 
 
 def verify_machine(machine: Machine) -> VerifyResult:
-    """对单台机器执行注册验证与环境探测，写 `state/docs/<alias>.md`。
+    """对单台机器执行注册验证与环境探测，写 `state/docs/<alias>.facts.json`。
+
+    Markdown 档案由人类维护；verify 不创建、不修改 `state/docs/<alias>.md`。
 
     - 必做探针：SSH 连通、uname、workspace_root 可写（缺失 → needs_up）、磁盘余量
     - tags.chip 以 ``ascend-`` 开头：npu-smi 型号/卡数（与 tags.cards 交叉校验，
@@ -97,8 +99,8 @@ def verify_machine(machine: Machine) -> VerifyResult:
     - 网络探针（所有机器）：pip index 可达性与延迟、代理 env、apt mirror、DNS
     """
     st = config.state_dir()
-    doc = st / "docs" / f"{machine.alias}.md"
-    doc.parent.mkdir(parents=True, exist_ok=True)
+    facts_path = st / "docs" / f"{machine.alias}.facts.json"
+    facts_path.parent.mkdir(parents=True, exist_ok=True)
     ep = config.resolve_endpoint(machine, st)
     ws = ep.workspace_root
     tags = machine.tags or {}
@@ -112,36 +114,36 @@ def verify_machine(machine: Machine) -> VerifyResult:
     except ssh.SSHError as e:
         facts = {"error": str(e), "endpoint": f"{ep.user}@{ep.host}:{ep.port}",
                  "verified_at": _now()}
-        _write_doc(doc, machine, "unreachable", facts, issues=[])
-        return VerifyResult("unreachable", facts, doc)
+        _write_facts(facts_path, "unreachable", facts)
+        return VerifyResult("unreachable", facts, facts_path)
 
     if r.returncode == 255:  # ssh 自身失败（DNS/拒绝/认证），脚本未运行
         err = (r.stderr or b"").decode("utf-8", "replace").strip()[:2000]
         facts = {"error": f"ssh 连接失败（rc=255）: {err}",
                  "endpoint": f"{ep.user}@{ep.host}:{ep.port}",
                  "verified_at": _now()}
-        _write_doc(doc, machine, "unreachable", facts, issues=[])
-        return VerifyResult("unreachable", facts, doc)
+        _write_facts(facts_path, "unreachable", facts)
+        return VerifyResult("unreachable", facts, facts_path)
 
     if r.returncode != 0:
         err = (r.stderr or b"").decode("utf-8", "replace").strip()[:2000]
         facts = {"error": f"probe 脚本失败（rc={r.returncode}）", "stderr": err,
                  "verified_at": _now()}
-        _write_doc(doc, machine, "degraded", facts, issues=[])
-        return VerifyResult("degraded", facts, doc)
+        _write_facts(facts_path, "degraded", facts)
+        return VerifyResult("degraded", facts, facts_path)
 
     out = (r.stdout or b"").decode("utf-8", "replace")
     facts = _parse_facts(out)
     if facts is None:
         facts = {"error": "probe 输出无法解析为 JSON", "raw": out[:2000],
                  "verified_at": _now()}
-        _write_doc(doc, machine, "degraded", facts, issues=[])
-        return VerifyResult("degraded", facts, doc)
+        _write_facts(facts_path, "degraded", facts)
+        return VerifyResult("degraded", facts, facts_path)
 
     status, issues = _judge(machine, facts, ws)
     facts["verified_at"] = _now()
-    _write_doc(doc, machine, status, facts, issues)
-    return VerifyResult(status, facts, doc)
+    _write_facts(facts_path, status, facts)
+    return VerifyResult(status, facts, facts_path)
 
 
 def _judge(machine: Machine, facts: dict, ws: str) -> tuple[str, list[str]]:
@@ -180,111 +182,17 @@ def _parse_facts(out: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-# ---------------------------------------------------------------- 档案文档
+# ---------------------------------------------------------------- 结构化 facts
 
 
-def _write_doc(
-    doc: Path, machine: Machine | None, status: str, facts: dict, issues: list[str]
-) -> None:
-    """把 verify 结果写成人类与 agent 可读的 Markdown 档案。"""
-    alias = machine.alias if machine else doc.stem
-    L: list[str] = []
-    A = L.append
-    A(f"# 机器档案: {alias}")
-    A("")
-    A("- alias: " + _md(alias))
-    A(f"- verify_status: {status}")
-    A(f"- verified_at: {facts.get('verified_at', '')}")
-    if machine:
-        A(f"- mode: {machine.mode}")
-        A(f"- host: {machine.host}:{machine.port}")
-        A(f"- user: {machine.user}")
-        A(f"- workspace_root: {_md(machine.effective_workspace_root())}")
-        tags = machine.tags or {}
-        A("- tags: " + ", ".join(f"{k}={v}" for k, v in tags.items()))
-        if machine.note:
-            A(f"- note: {_md(machine.note)}")
-    A("")
-    A("## 最近一次 verify")
-    A("")
-    A(f"- status: **{status}**")
-    if issues:
-        A("- 问题:")
-        for it in issues:
-            A(f"  - {_md(it)}")
-    else:
-        A("- 问题: 无")
-    A("")
-    A("## 探测事实")
-    A("")
-    A("| 键 | 值 |")
-    A("| --- | --- |")
-    for k in sorted(facts):
-        if k == "verified_at":
-            continue
-        v = facts[k]
-        s = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
-        s = _md(s)
-        if len(s) > 300:
-            s = s[:300] + "…"
-        A(f"| {k} | {s} |")
-    A("")
-    if facts.get("npu_smi_ok") is not None or facts.get("npu_model"):
-        A("## NPU（按 tags.chip 探针）")
-        A("")
-        A(f"- npu-smi 可用: {facts.get('npu_smi_ok')}")
-        if facts.get("npu_model"):
-            A(f"- 型号: {_md(str(facts.get('npu_model')))}")
-        if facts.get("npu_count") is not None:
-            A(f"- 实测卡数: {facts.get('npu_count')}")
-        if facts.get("cards_match") is not None:
-            A(f"- 与 tags.cards 一致: {facts.get('cards_match')}")
-        if facts.get("torch_version"):
-            A(f"- torch: {_md(str(facts.get('torch_version')))}")
-        if facts.get("torch_npu_version"):
-            A(f"- torch_npu: {_md(str(facts.get('torch_npu_version')))}")
-        cards = facts.get("npu_cards")
-        if isinstance(cards, list) and cards:
-            A("- 每卡占用（verify 时刻实测）:")
-            A("")
-            A("  | 卡 | 型号 | AICore% | HBM 已用/总量 (MB) |")
-            A("  | --- | --- | --- | --- |")
-            for c in cards:
-                aicore = c.get("aicore_pct")
-                aicore_s = "n/a" if aicore is None else str(aicore)
-                A(f"  | {c.get('index')} | {_md(str(c.get('model', '')))} | "
-                  f"{aicore_s} | {c.get('hbm_used_mb', 0)} / {c.get('hbm_total_mb', 0)} |")
-        A("")
-    if facts.get("pip_index_url") is not None:
-        A("## 网络")
-        A("")
-        A(f"- pip index: {_md(str(facts.get('pip_index_url')))}")
-        A(f"- pip index 可达: {facts.get('pip_index_reachable')}（延迟 "
-          f"{facts.get('pip_index_latency_ms')} ms）")
-        A(f"- 代理 env: {_md(str(facts.get('proxy_env', '') or ''))}")
-        A(f"- apt mirror: {_md(str(facts.get('apt_mirror', '') or ''))}")
-        A(f"- DNS: {facts.get('dns_ok')}")
-        A("")
-    A("## 原始 facts（agent 解析用）")
-    A("")
-    A("```json")
-    A(json.dumps(facts, ensure_ascii=False, indent=2))
-    A("```")
-    A("")
-    doc.parent.mkdir(parents=True, exist_ok=True)
-    doc.write_text("\n".join(L), encoding="utf-8")
-    # sidecar：结构化 facts（含 verify_status），供 machines 卡级展示等程序化读取
+def _write_facts(path: Path, status: str, facts: dict) -> None:
+    """写入 verify 的结构化结果，不触碰人类维护的 Markdown。"""
     payload = dict(facts)
     payload["verify_status"] = status
-    sidecar = doc.parent / f"{doc.stem}.facts.json"
-    sidecar.write_text(
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-
-
-def _md(s: str) -> str:
-    """Markdown 表格单元格安全化：转义 | 并压平换行。"""
-    return s.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
 
 
 def _read_verify_summary(
@@ -292,16 +200,16 @@ def _read_verify_summary(
 ) -> tuple[str | None, str | None, list | None]:
     """读最近 verify 结论（status / verified_at / 每卡占用 npu_cards）。
 
-    优先读结构化 sidecar `state/docs/<alias>.facts.json`；旧档案无 sidecar 时
+    优先读结构化 facts `state/docs/<alias>.facts.json`；旧档案无 facts 时
     回退解析 Markdown（此时 npu_cards 为 None）。
     """
     doc = st / "docs" / f"{alias}.md"
-    sidecar = st / "docs" / f"{alias}.facts.json"
+    facts_path = st / "docs" / f"{alias}.facts.json"
     status = verified = None
     npu_cards: list | None = None
-    if sidecar.is_file():
+    if facts_path.is_file():
         try:
-            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            data = json.loads(facts_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             data = None
         if isinstance(data, dict):
@@ -499,17 +407,25 @@ def cli_verify(args) -> dict:
     machines = config.load_machines()
     machine = machines.get(args.alias)
     if machine is None:
-        # 不存在 alias：无法探测，返回 unreachable（仍写档案便于人类阅读）
+        # 不存在 alias：无法探测，返回 unreachable（只写结构化 facts）
         st = config.state_dir()
-        doc = st / "docs" / f"{args.alias}.md"
+        facts_path = st / "docs" / f"{args.alias}.facts.json"
         facts = {
             "error": f"alias '{args.alias}' 未注册（machines.json 中不存在该机器）",
             "verified_at": _now(),
         }
-        _write_doc(doc, None, "unreachable", facts, issues=[])
-        return {"status": "unreachable", "facts": facts, "doc": str(doc)}
+        _write_facts(facts_path, "unreachable", facts)
+        return {
+            "status": "unreachable",
+            "facts": facts,
+            "facts_file": str(facts_path),
+        }
     result = verify_machine(machine)
-    return {"status": result.status, "facts": result.facts, "doc": str(result.doc)}
+    return {
+        "status": result.status,
+        "facts": result.facts,
+        "facts_file": str(result.facts_path),
+    }
 
 
 def cli_machines(args) -> dict:

@@ -44,10 +44,11 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 1. **一切远程操作走 `remote` CLI，不裸用 ssh。** 不手写 `ssh user@host ...`。
    `remote` 统一封装机器解析、超时、fail-closed 与输出契约；裸 ssh 无法获得
    占用、机器档案、日志等配套能力。
-2. **先读机器档案。** 对目标 `<alias>`，先读
-   `<repo>/.remote/state/docs/<alias>.md`（简称 `state/docs/<alias>.md`）：
-   OS/芯片/卡数、workspace_root、pip index 可达性、proxy 等网络事实。
-   档案缺失或过期时先 `remote verify <alias>` 刷新。
+2. **先读机器档案。** 对目标 `<alias>`，先读机器生成的
+   `<repo>/.remote/state/docs/<alias>.facts.json`（简称 `state/docs/<alias>.facts.json`）：
+   OS/芯片/卡数、workspace_root、pip index 可达性、proxy 等网络事实；如果存在，
+   再读人类维护的 `state/docs/<alias>.md` 了解补充说明。facts 文件缺失或过期时先
+   `remote verify <alias>` 刷新；verify 不创建、不修改 Markdown。
 3. **干活前查占用。** `remote machines` 查看各机 running jobs 的 owner/task/资源占用，
    避开被占用的机器与资源；`remote status <alias> [--probe]` 看单机详情。
 4. **长任务显式声明任务。** 后台任务必须带 `--background --task "<做什么>"`；NPU
@@ -79,7 +80,7 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 | `remote install` | 将当前插件入口原子安装为 `~/.local/bin/remote`，安装后可从任意目录调用 |
 | `remote machines` | 所有机器一览：tags、占用（owner/task/资源）、以及 NPU 机器最近 verify 的每卡 HBM/AICore 实测 |
 | `remote status <alias> [--probe]` | 单机详情；`--probe` 实时查通用负载，NPU 机器额外查 NPU 利用率/显存 |
-| `remote verify <alias>` | 环境探测，刷新 `state/docs/<alias>.md` 机器档案 |
+| `remote verify <alias>` | 环境探测，刷新 `state/docs/<alias>.facts.json`；不覆盖人类 Markdown |
 | `remote up <alias> [--password-env NAME | --password-stdin]` | 容器模式拉起/复用容器；SSH 模式只做免密引导与工作区初始化 |
 | `remote down <alias>` | 停止并移除容器模式的受管容器；SSH/裸机模式为空操作 |
 | `remote sync <alias>` | 方法 A：整个 workspace 的 Git 同步（字节级一致，不改行尾） |
@@ -125,7 +126,8 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 以"找空闲机器 → 同步代码 → 编译/冒烟"为例：
 
 1. `remote machines` → 选择空闲机器（无 running jobs，或占用与你需要的卡不冲突）。
-2. 读 `state/docs/<alias>.md`；缺失/过期先 `remote verify <alias>`。确认
+2. 读 `state/docs/<alias>.facts.json`，并按需读 `state/docs/<alias>.md`；facts 缺失/过期先
+   `remote verify <alias>`。确认
    workspace_root、pip index、proxy 等网络事实。
 3. `remote sync <alias>` 同步整个 workspace（只对齐代码，不做编译）；workspace
    一级目录下的仓库与已注册 Git worktree 会自动纳入（深度 ≥2 的独立仓库不扫描；
