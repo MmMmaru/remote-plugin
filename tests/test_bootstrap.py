@@ -162,9 +162,9 @@ class TestEnsureContainer(unittest.TestCase):
             .on("docker version --format", cp())
             .on("docker image inspect", cp(returncode=1))
             .on("docker pull", cp())
-            .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n/dev/davinci_manager\n"))
+            .on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n/dev/hisi_hdc\n"))
             .on("docker inspect ", cp())  # 容器不存在（stdout 空）
-            .on("docker run -d", cp())
+            .on("docker run -it -d", cp())
             .on("docker exec ", cp())  # docker exec 校验
         )
         with mock.patch("remote_plugin.output.progress", side_effect=events.append), \
@@ -174,15 +174,24 @@ class TestEnsureContainer(unittest.TestCase):
         # 顺序：docker 可用 → 拉镜像 → 创建 → docker exec 校验
         i_docker = self._index(calls, "docker version --format")
         i_pull = self._index(calls, "docker pull")
-        i_run = self._index(calls, "docker run -d")
+        i_run = self._index(calls, "docker run -it -d")
         i_exec = self._index(calls, "docker exec ")
         self.assertTrue(i_docker < i_pull < i_run < i_exec)
         # 创建参数：无端口映射、无 sshd；含 ascend 设备 + 镜像 + 保活命令
-        run_script = self._call(calls, "docker run -d")["script"]
-        self.assertNotIn("-p", run_script)
+        run_script = self._call(calls, "docker run -it -d")["script"]
+        self.assertNotIn(" -p ", f" {run_script} ")
         self.assertNotIn("sshd", run_script)
-        self.assertIn("--device /dev/davinci0", run_script)
-        self.assertIn("--device /dev/davinci_manager", run_script)
+        self.assertIn("--device=/dev/davinci_manager", run_script)
+        self.assertIn("--device=/dev/hisi_hdc", run_script)
+        self.assertIn("--net=host", run_script)
+        self.assertIn("--shm-size=500g", run_script)
+        self.assertIn("--privileged=true", run_script)
+        self.assertIn("--workdir /home", run_script)
+        self.assertIn("-v /usr/local/Ascend/driver:/usr/local/Ascend/driver", run_script)
+        self.assertIn("-v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi", run_script)
+        self.assertIn("-v /home:/home", run_script)
+        self.assertIn("-e http_proxy=", run_script)
+        self.assertIn("-e https_proxy=", run_script)
         self.assertIn(IMAGE, run_script)
         self.assertIn("tail -f /dev/null", run_script)
         # docker exec 校验打到容器名
@@ -201,7 +210,7 @@ class TestEnsureContainer(unittest.TestCase):
             FakeSSH()
             .on("docker version --format", cp())
             .on("docker image inspect", cp())
-            .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n/dev/davinci_manager\n"))
+            .on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n/dev/hisi_hdc\n"))
             .on("docker inspect ", cp(stdout=docker_inspect_healthy()))
             .on("docker exec ", cp())
         )
@@ -224,7 +233,7 @@ class TestEnsureContainer(unittest.TestCase):
             FakeSSH()
             .on("docker version --format", cp())
             .on("docker image inspect", cp())
-            .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
+            .on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n"))
             .on("docker inspect ", cp(stdout=json.dumps(drifted).encode("utf-8")))
             .on("docker exec ", cp())
         )
@@ -245,7 +254,7 @@ class TestEnsureContainer(unittest.TestCase):
             FakeSSH()
             .on("docker version --format", cp())
             .on("docker image inspect", cp())
-            .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
+            .on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n"))
             .on("docker inspect ", cp(stdout=json.dumps(drifted).encode("utf-8")))
             .on("docker exec ", cp())
         )
@@ -262,7 +271,7 @@ class TestEnsureContainer(unittest.TestCase):
             FakeSSH()
             .on("docker version --format", cp())
             .on("docker image inspect", cp())
-            .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
+            .on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n"))
             .on("docker inspect ", cp(stdout=json.dumps(drifted).encode("utf-8")))
         )
         with mock.patch("remote_plugin.output.progress"), \
@@ -285,7 +294,7 @@ class TestEnsureContainer(unittest.TestCase):
             FakeSSH()
             .on("docker version --format", cp())
             .on("docker image inspect", cp())
-            .on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
+            .on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n"))
             .on("docker inspect ", cp(stdout=docker_inspect_healthy()))
             .on("docker exec ", cp())
         )
@@ -362,13 +371,13 @@ class TestEnsureContainer(unittest.TestCase):
             .on("docker image inspect", cp(returncode=1))
             .on("docker pull", cp())
             .on("docker inspect ", cp())
-            .on("docker run -d", cp())
+            .on("docker run -it -d", cp())
             .on("docker exec ", cp())
         )
         with mock.patch("remote_plugin.output.progress"), \
              mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             bootstrap.ensure_container(make_vm(), make_container(), {"chip": "nvidia-h100"})
-        run_script = self._call(fake.calls, "docker run -d")["script"]
+        run_script = self._call(fake.calls, "docker run -it -d")["script"]
         self.assertIn("--gpus all", run_script)
         self.assertNotIn("--device", run_script)
         # 非 ascend 不做设备枚举（无对应 ssh 调用）

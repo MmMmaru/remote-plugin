@@ -78,9 +78,9 @@ class TestMachineUp(UpTestBase):
         fake.on("docker version --format", cp())
         fake.on("docker image inspect", cp(returncode=1))
         fake.on("docker pull", cp())
-        fake.on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n/dev/davinci_manager\n"))
+        fake.on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n/dev/hisi_hdc\n"))
         fake.on("docker inspect ", cp())  # 容器不存在
-        fake.on("docker run -d", cp())
+        fake.on("docker run -it -d", cp())
         fake.on("docker exec ", cp())
         fake.on("mkdir -p", cp())
         password_calls = []
@@ -113,7 +113,7 @@ class TestMachineUp(UpTestBase):
         # 顺序：免密 → docker → docker exec 校验 → 工作区（按脚本索引）
         i_docker = self._index(calls, lambda c: "docker version --format" in c["script"])
         i_pull = self._index(calls, lambda c: "docker pull" in c["script"])
-        i_run = self._index(calls, lambda c: "docker run -d" in c["script"])
+        i_run = self._index(calls, lambda c: "docker run -it -d" in c["script"])
         i_exec = self._index(calls, lambda c: c["script"].strip().startswith("docker exec "))
         i_ws = self._index(calls, lambda c: ".remote-mirrors" in c["script"])
         self.assertTrue(0 < 1 < i_docker < i_pull < i_run < i_exec < i_ws)
@@ -156,7 +156,7 @@ class TestMachineUp(UpTestBase):
         fake.on("true", cp(), exact=True)
         fake.on("docker version --format", cp())
         fake.on("docker image inspect", cp())
-        fake.on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
+        fake.on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n"))
         fake.on("docker inspect ", cp(stdout=docker_inspect_healthy()))
         fake.on("docker exec ", cp())
         fake.on("mkdir -p", cp())
@@ -183,7 +183,7 @@ class TestMachineUp(UpTestBase):
         fake.on("true", cp(), exact=True)
         fake.on("docker version --format", cp())
         fake.on("docker image inspect", cp())
-        fake.on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n"))
+        fake.on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n"))
         fake.on("docker inspect ", cp(stdout=json.dumps(drifted).encode("utf-8")))
         with mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
             with self.assertRaises(NeedsRepairError) as ctx:
@@ -200,7 +200,7 @@ class TestMachineUp(UpTestBase):
         fake.on("true", cp(), exact=True)
         fake.on("docker version --format", cp())
         fake.on("docker image inspect", cp())
-        fake.on("for d in /dev/davinci*", cp(stdout=b"/dev/davinci0\n/dev/davinci_manager\n"))
+        fake.on("for d in /dev/davinci_manager", cp(stdout=b"/dev/davinci_manager\n/dev/hisi_hdc\n"))
         fake.on("docker inspect ", cp(stdout=docker_inspect_healthy()))
         fake.on("docker exec ", cp())
         fake.on("mkdir -p", cp())

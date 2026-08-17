@@ -38,6 +38,29 @@ _ASKPASS_SSH_OPTS = [
 # 容器保活命令：容器内 PID1 长期驻留（无 sshd；访问统一经 docker exec）
 _CONTAINER_KEEPALIVE_CMD = "exec tail -f /dev/null"
 
+# Ascend 容器的设备与宿主机运行时挂载，和 scripts/docker_run.sh 保持一致。
+_ASCEND_DEVICE_PATHS = (
+    "/dev/davinci_manager",
+    "/dev/hisi_hdc",
+    "/dev/devmm_svm",
+)
+_ASCEND_BIND_MOUNTS = (
+    ("/usr/local/Ascend/driver", "/usr/local/Ascend/driver"),
+    ("/usr/local/dcmi", "/usr/local/dcmi"),
+    ("/usr/local/bin/npu-smi", "/usr/local/bin/npu-smi"),
+    ("/etc/ascend_install.info", "/etc/ascend_install.info"),
+    ("/usr/local/sbin", "/usr/local/sbin"),
+    ("/home", "/home"),
+    ("/mnt", "/mnt"),
+    ("/dl", "/dl"),
+    ("/data", "/data"),
+    ("/data1", "/data1"),
+    ("/workspace", "/workspace"),
+    ("/tmp", "/tmp"),
+    ("/etc/hccn.conf", "/etc/hccn.conf"),
+    ("/usr/share/zoneinfo/Asia/Shanghai", "/etc/localtime"),
+)
+
 # 幂等追加公钥的 shell 片段：read 一行，已存在则跳过（避免重复行）
 _AUTH_KEYS_INNER = (
     "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; "
@@ -178,7 +201,7 @@ def _desired_devices(vm: Endpoint, tags: dict) -> set[str]:
     if not chip.startswith("ascend-"):
         return set()
     script = (
-        "for d in /dev/davinci* /dev/davinci_manager /dev/hisi_hdc /dev/devmm_svm; "
+        "for d in /dev/davinci_manager /dev/hisi_hdc /dev/devmm_svm; "
         "do [ -e \"$d\" ] && echo \"$d\"; done"
     )
     r = ssh.ssh_run(vm, script, timeout_sec=60)
@@ -189,16 +212,29 @@ def _desired_devices(vm: Endpoint, tags: dict) -> set[str]:
 def _create_container(vm: Endpoint, container: ContainerCfg, tags: dict, devices: set[str]) -> None:
     chip = str(tags.get("chip") or "")
     if chip.startswith("ascend-"):
-        flags = "".join(f" --device {shlex.quote(p)}" for p in sorted(devices))
+        flags = "".join(
+            f" --device={shlex.quote(path)}"
+            for path in _ASCEND_DEVICE_PATHS
+            if path in devices
+        )
+        flags += " --net=host --shm-size=500g --privileged=true --workdir /home"
+        flags += " --entrypoint=bash"
+        flags += "".join(
+            f" -v {shlex.quote(src)}:{shlex.quote(dst)}"
+            for src, dst in _ASCEND_BIND_MOUNTS
+        )
+        # 让容器继承宿主机的代理配置；值在宿主机 shell 中展开，不写入本地日志或 state。
+        flags += ' -e http_proxy="${http_proxy:-}" -e https_proxy="${https_proxy:-}"'
     elif chip.startswith("nvidia-"):
         flags = " --gpus all"
+        flags += " --entrypoint=bash"
     else:
-        flags = ""
+        flags = " --entrypoint=bash"
     cmd = (
-        "docker run -d --name " + shlex.quote(container.name)
+        "docker run -it -d --name " + shlex.quote(container.name)
         + " --restart unless-stopped"
         + flags
-        + " --entrypoint bash " + shlex.quote(container.image)
+        + " " + shlex.quote(container.image)
         + " -c " + shlex.quote(_CONTAINER_KEEPALIVE_CMD)
     )
     output.progress({"step": "container", "status": "creating", "name": container.name})
