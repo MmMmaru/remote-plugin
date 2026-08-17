@@ -1,16 +1,22 @@
 [
   {
-    "alias": "ppu",
-    "mode": "ssh",
-    "host": "8.130.213.80",
-    "port": 1016,
+    "alias": "机器别名",
+    "mode": "container",
+    "host": "宿主机IP或域名",
+    "port": 22,
     "user": "root",
-    "workspace_root": "/root/xrs/vllm-workspace",
+    "workspace_root": "/vllm-workspace",
+    "container": {
+      "image": "容器镜像",
+      "name": "容器名称",
+      "ssh_port": 22,
+      "workspace_root": "/vllm-workspace"
+    },
     "tags": {
-      "chip": "ppu",
-      "cards": 1,
+      "chip": "ascend-910b",
+      "cards": 8,
       "os": "linux"
     },
-    "note": "PPU, 单卡"
+    "note": "容器/NPU机器"
   }
 ]
