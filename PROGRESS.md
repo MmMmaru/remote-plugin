@@ -109,3 +109,8 @@
 
 - `remote verify` 改为只生成 `state/docs/<alias>.facts.json`，保留 `state/docs/<alias>.md` 给人类维护。
 - 更新机器管理文档、CLI 输出契约和回归测试；206 条 unittest 全绿。
+
+### 08-17 15:07
+
+- 修正 A3 `npu-smi` 的 Chip 行误判：按 `Phy-ID` 生成 0..15 逻辑卡 index，并保留 HBM 数据。
+- 增加 A3 两行布局回归测试；真实 `17.111` verify 返回 `ok`、16 卡、`cards_match=true`。

@@ -89,6 +89,38 @@ class TestBuildProbeScript(unittest.TestCase):
             self.assertIn("CARD 0 910B4 33 3425 65536", cards)
             self.assertIn("CARD 1 910B4 5 999 32768", cards)
 
+            # A3 布局：Chip 行的 $2 为 "Chip Phy-ID"，不能再次被当成名称行。
+            # Phy-ID 已经是连续逻辑卡 index。
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                'echo "| 0       Ascend910     | OK              | 170.0         36      0 / 0                |"\n'
+                'echo "| 0     0                | 0000:9D:00.0    | 0             0 / 0      3142 / 65536 |"\n'
+                'echo "| 0       Ascend910     | OK              | -             37      0 / 0                |"\n'
+                'echo "| 1     1                | 0000:9F:00.0    | 0             0 / 0      2879 / 65536 |"\n'
+                'echo "| 1       Ascend910     | OK              | 164.0         37      0 / 0                |"\n'
+                'echo "| 0     2                | 0000:99:00.0    | 0             0 / 0      3130 / 65536 |"\n'
+                'echo "| 1       Ascend910     | OK              | -             38      0 / 0                |"\n'
+                'echo "| 1     3                | 0000:9B:00.0    | 0             0 / 0      2890 / 65536 |"\n',
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [BASH, "-s"], input=NPU_PARSE_AWK.encode("utf-8"),
+                capture_output=True, timeout=30, env=env,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            cards = [l for l in proc.stdout.decode("utf-8", "replace").splitlines()
+                     if l.startswith("CARD ")]
+            self.assertEqual(len(cards), 4)
+            self.assertEqual(
+                cards,
+                [
+                    "CARD 0 Ascend910 0 3142 65536",
+                    "CARD 1 Ascend910 0 2879 65536",
+                    "CARD 2 Ascend910 0 3130 65536",
+                    "CARD 3 Ascend910 0 2890 65536",
+                ],
+            )
+
             # 仅名行布局（无总线行）：仍能逐卡计数，利用率/显存记 n/a 0 0
             fake.write_text(
                 "#!/usr/bin/env bash\n"

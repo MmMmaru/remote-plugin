@@ -20,16 +20,12 @@ from typing import Any
 #   | 0  910B3 | OK           | 93.1  48  0/0 |
 #   | 0        | 0000:C1:00.0 | 0     0/0  3425/65536 |
 # 第一行 $2=NPU+Name；第二行 Bus-Id 在 $3，$4 为 "[AICore%] Mem(used/total) HBM(used/total)"。
+# A3（Ascend910）第二行的 $2 为 "Chip Phy-ID"（如 "0 0"），第二个字段就是全局逻辑卡 index。
 # 不同驱动版本布局差异：used/total 间的 `/` 可能无空格（0/0 或 0 / 0），
 # 部分版本第二行没有 AICore% 列——统一先把 `/` 撑开再按列数判定（7 段含
 # AICore%，6 段无 AICore% 记 n/a），解析不出时 best-effort 记 n/a 0 0。
 NPU_PARSE_AWK = r"""npu-smi info 2>&1 | awk -F'|' '
   /^\|/ {
-    if ($2 ~ /^ *[0-9]+ +[A-Za-z0-9]/) {
-      # 第一行：NPU + Name
-      if (model != "") printf "CARD %d %s n/a 0 0\n", idx, model
-      n = split($2, t, " "); idx = t[1]; model = t[2]; next
-    }
     if ($3 ~ /^ *[0-9a-fA-F]+:/) {
       # 第二行：Bus-Id 在 $3；$4 = "[AICore%]  Mem(used/total)  HBM(used/total)"
       if (model != "") {
@@ -45,12 +41,24 @@ NPU_PARSE_AWK = r"""npu-smi info 2>&1 | awk -F'|' '
           # 6 段（无 AICore% 列）：Mem used / total HBM used / total
           hbm_u = a[4]; hbm_t = a[6]
         }
-        printf "CARD %d %s %s %s %s\n", idx, model, aicore, hbm_u, hbm_t
+        n = split($2, chip, " ")
+        logical_idx = physical_idx
+        if (n >= 2 && chip[2] ~ /^[0-9]+$/) {
+          # A3：$2 = Chip Phy-ID，Phy-ID 直接是 0..15 的逻辑卡 index
+          logical_idx = chip[2]
+        }
+        printf "CARD %d %s %s %s %s\n", logical_idx, model, aicore, hbm_u, hbm_t
         model = ""
       }
+      next
+    }
+    if ($2 ~ /^ *[0-9]+ +[A-Za-z0-9]/) {
+      # 第一行：NPU + Name；必须放在 Bus-Id 行之后，A3 Chip 行的 $2 也以数字开头
+      if (model != "") printf "CARD %d %s n/a 0 0\n", physical_idx, model
+      n = split($2, t, " "); physical_idx = t[1]; model = t[2]; next
     }
   }
-  END { if (model != "") printf "CARD %d %s n/a 0 0\n", idx, model }
+  END { if (model != "") printf "CARD %d %s n/a 0 0\n", physical_idx, model }
 '"""
 
 _BASE_SCRIPT = r"""#!/usr/bin/env bash
