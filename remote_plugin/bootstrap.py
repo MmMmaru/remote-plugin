@@ -111,7 +111,9 @@ def push_pubkey(endpoint: Endpoint, pubkey: str, password: str | None) -> None:
         )
 
 
-def ensure_container(vm: Endpoint, container: ContainerCfg, tags: dict) -> None:
+def ensure_container(
+    vm: Endpoint, container: ContainerCfg, tags: dict, machine_type: str = ""
+) -> None:
     """模式 A 容器引导：docker 可用 → 拉镜像（无则 pull）→ 创建/复用 → 校验 docker exec。
 
     幂等：健康容器直接复用并回 ``already_ready``；漂移抛 ``NeedsRepairError``，
@@ -121,10 +123,10 @@ def ensure_container(vm: Endpoint, container: ContainerCfg, tags: dict) -> None:
         raise RemotePluginError("container.name / container.image 配置缺失")
     _check_docker(vm)
     _ensure_image(vm, container.image)
-    desired_devices = _desired_devices(vm, tags)
+    desired_devices = _desired_devices(vm, tags, machine_type)
     state = _inspect_container(vm, container.name)
     if state is None:
-        _create_container(vm, container, tags, desired_devices)
+        _create_container(vm, container, tags, desired_devices, machine_type)
     else:
         ok, reason = _container_healthy(state, container, desired_devices)
         if not ok:
@@ -195,10 +197,19 @@ def _remote_has_proxy(vm: Endpoint) -> bool:
     return bool(out.strip())
 
 
-def _desired_devices(vm: Endpoint, tags: dict) -> set[str]:
-    """按 tags.chip 计算期望挂载的设备节点集合；非 ascend 芯片返回空集。"""
-    chip = str(tags.get("chip") or "")
-    if not chip.startswith("ascend-"):
+def _is_ascend_machine(machine_type: str, tags: dict) -> bool:
+    """判断机器是否使用 Ascend 容器参数；显式 machine_type 优先于 tags.chip。"""
+    explicit = str(machine_type or "").strip().lower()
+    if explicit:
+        return explicit.startswith("ascend") or explicit in {
+            "a2", "a3", "a5", "310p",
+        }
+    return str(tags.get("chip") or "").startswith("ascend-")
+
+
+def _desired_devices(vm: Endpoint, tags: dict, machine_type: str = "") -> set[str]:
+    """按 machine_type/tags.chip 计算期望挂载的设备节点集合。"""
+    if not _is_ascend_machine(machine_type, tags):
         return set()
     script = (
         "for d in /dev/davinci_manager /dev/hisi_hdc /dev/devmm_svm; "
@@ -209,15 +220,24 @@ def _desired_devices(vm: Endpoint, tags: dict) -> set[str]:
     return {ln.strip() for ln in out.splitlines() if ln.strip()}
 
 
-def _create_container(vm: Endpoint, container: ContainerCfg, tags: dict, devices: set[str]) -> None:
+def _create_container(
+    vm: Endpoint,
+    container: ContainerCfg,
+    tags: dict,
+    devices: set[str],
+    machine_type: str = "",
+) -> None:
     chip = str(tags.get("chip") or "")
-    if chip.startswith("ascend-"):
+    if _is_ascend_machine(machine_type, tags):
         flags = "".join(
             f" --device={shlex.quote(path)}"
             for path in _ASCEND_DEVICE_PATHS
             if path in devices
         )
-        flags += " --net=host --shm-size=500g --privileged=true --workdir /home"
+        flags += (
+            " --net=host --shm-size=500g --privileged=true --workdir "
+            + shlex.quote(container.workspace_root)
+        )
         flags += " --entrypoint=bash"
         flags += "".join(
             f" -v {shlex.quote(src)}:{shlex.quote(dst)}"

@@ -29,7 +29,7 @@ def machine_up(machine: Machine, password: str | None) -> Endpoint:
     if machine.mode == "container":
         if machine.container is None:
             raise ConfigError(f"machine {machine.alias} 缺 container 配置（mode=container）")
-        ensure_container(vm, machine.container, machine.tags)
+        ensure_container(vm, machine.container, machine.tags, machine.machine_type)
         ep = _container_endpoint(machine)
         _write_endpoint(machine, ep)
     else:

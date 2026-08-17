@@ -155,6 +155,27 @@ class TestEnsureContainer(unittest.TestCase):
         self.assertGreaterEqual(i, 0, f"未找到脚本含 {needle!r} 的调用")
         return calls[i]
 
+    def test_machine_type_selects_ascend_runtime_flags(self):
+        fake = FakeSSH().on("docker run -it -d", cp())
+        with mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
+            bootstrap._create_container(
+                make_vm(), make_container(), {}, {"/dev/davinci_manager"}, "A3"
+            )
+        run_script = self._call(fake.calls, "docker run -it -d")["script"]
+        self.assertIn("--net=host", run_script)
+        self.assertIn("--workdir /home/x/ws", run_script)
+        self.assertIn("/usr/local/Ascend/driver:/usr/local/Ascend/driver", run_script)
+
+    def test_explicit_non_ascend_machine_type_overrides_chip(self):
+        fake = FakeSSH().on("docker run -it -d", cp())
+        with mock.patch("remote_plugin.ssh.ssh_run", side_effect=fake.ssh_run):
+            bootstrap._create_container(
+                make_vm(), make_container(), {"chip": "ascend-a3"}, set(), "ppu"
+            )
+        run_script = self._call(fake.calls, "docker run -it -d")["script"]
+        self.assertNotIn("--net=host", run_script)
+        self.assertNotIn("/usr/local/Ascend/driver", run_script)
+
     def test_full_create_flow_order(self):
         events = []
         fake = (
@@ -186,7 +207,7 @@ class TestEnsureContainer(unittest.TestCase):
         self.assertIn("--net=host", run_script)
         self.assertIn("--shm-size=500g", run_script)
         self.assertIn("--privileged=true", run_script)
-        self.assertIn("--workdir /home", run_script)
+        self.assertIn("--workdir /home/x/ws", run_script)
         self.assertIn("-v /usr/local/Ascend/driver:/usr/local/Ascend/driver", run_script)
         self.assertIn("-v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi", run_script)
         self.assertIn("-v /home:/home", run_script)

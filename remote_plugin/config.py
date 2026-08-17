@@ -39,6 +39,7 @@ class Machine:
 
     alias: str
     mode: str = "container"
+    machine_type: str = ""
     host: str = ""
     port: int = 22
     user: str = "root"
@@ -152,6 +153,9 @@ def _parse_machine(item: Any, idx: int, path: Path, label: str) -> Machine:
     mode = item.get("mode", "container")
     if mode not in ("container", "ssh"):
         raise ConfigError(f"{where}.mode 必须是 container|ssh，实际 {mode!r}")
+    machine_type = item.get("machine_type", "")
+    if not isinstance(machine_type, str):
+        raise ConfigError(f"{where}.machine_type 必须是字符串")
     host = _require_str(item, "host", where)
     port = _require_int(item, "port", 22, where)
     user = item.get("user", "root")
@@ -185,6 +189,7 @@ def _parse_machine(item: Any, idx: int, path: Path, label: str) -> Machine:
     return Machine(
         alias=alias,
         mode=mode,
+        machine_type=machine_type,
         host=host,
         port=port,
         user=user,

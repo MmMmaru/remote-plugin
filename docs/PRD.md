@@ -42,6 +42,7 @@
 {
   "alias": "192.168.9.166",
   "mode": "container",
+  "machine_type": "A3",
   "host": "192.168.9.166",
   "port": 22,
   "user": "root",
@@ -82,6 +83,8 @@
 
 - `alias`：唯一标识，字母数字与 `-_`（直接用 IP 也可以），必填
 - `mode`：`container` | `ssh`，默认 `container`
+- `machine_type`：可选的机器类型（如 `A2` / `A3` / `A5` / `310P` / `ppu`）；
+  Ascend 类型创建容器时使用 Ascend 设备、driver 和数据目录参数；缺失时兼容读取 `tags.chip`
 - `workspace_root`：容器/目标内工作区根路径，默认 `/vllm-workspace`
 - `tags`：字典形式，描述机器硬件与系统，驱动 verify 的可选探针（见 3.2）与容器设备挂载（见 3.4）：
   - `chip`：加速器型号，如 `ascend-a2` / `ascend-a3` / `nvidia-h100`；`ascend-*` 触发 npu-smi 探针

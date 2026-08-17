@@ -32,6 +32,7 @@ class TestLoadMachines(_TempDir):
             {
                 "alias": "a2",
                 "mode": "container",
+                "machine_type": "A3",
                 "host": "192.168.9.166",
                 "port": 22,
                 "user": "root",
@@ -48,6 +49,7 @@ class TestLoadMachines(_TempDir):
         machines = config.load_machines(self.root)
         self.assertIn("a2", machines)
         m = machines["a2"]
+        self.assertEqual(m.machine_type, "A3")
         self.assertEqual(m.tags["chip"], "ascend-a2")
         self.assertEqual(m.tags["cards"], 8)
         self.assertEqual(m.effective_workspace_root(), "/home/x/vllm-workspace")
