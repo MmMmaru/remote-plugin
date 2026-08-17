@@ -47,7 +47,7 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 2. **先读机器档案。** 对目标 `<alias>`，先读机器生成的
    `<repo>/.remote/state/docs/<alias>.facts.json`（简称 `state/docs/<alias>.facts.json`）：
    OS/芯片/卡数、workspace_root、pip index 可达性、proxy 等网络事实；如果存在，
-   再读人类维护的 `state/docs/<alias>.md` 了解补充说明。facts 文件缺失或过期时先
+   再读人类维护的 `state/docs/<alias>.md`及 `state/docs/overall.md` 了解补充说明。facts 文件缺失或过期时先
    `remote verify <alias>` 刷新；verify 不创建、不修改 Markdown。
 3. **干活前查占用。** `remote machines` 查看各机 running jobs 的 owner/task/资源占用，
    避开被占用的机器与资源；`remote status <alias> [--probe]` 看单机详情。
@@ -126,7 +126,7 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 以"找空闲机器 → 同步代码 → 编译/冒烟"为例：
 
 1. `remote machines` → 选择空闲机器（无 running jobs，或占用与你需要的卡不冲突）。
-2. 读 `state/docs/<alias>.facts.json`，并按需读 `state/docs/<alias>.md`；facts 缺失/过期先
+2. 读 `state/docs/overall.md` `state/docs/<alias>.facts.json`，并按需读 `state/docs/<alias>.md`；facts 缺失/过期先
    `remote verify <alias>`。确认
    workspace_root、pip index、proxy 等网络事实。
 3. `remote sync <alias>` 同步整个 workspace（只对齐代码，不做编译）；workspace
