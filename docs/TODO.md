@@ -2,4 +2,4 @@
 - [x] remote run 用户侧新增 `--logs {none|tail|full}`：默认前台 none（不落盘、不记录 job）、后台 full（合并日志全量）；tail 只留合并日志最后 200 行；远端 .remote-logs 任务结束自动删除
 - [x] 在A3机器上显存占用解析有误，卡数也有误差
 - [x] 机器环境需要提供一个markdown给人写，state自动生成+人类编辑不覆盖。
-- [] remote machines支持实时查询
+- [x] remote machines/status 支持实时查询

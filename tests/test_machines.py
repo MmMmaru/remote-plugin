@@ -234,6 +234,79 @@ class TestListMachines(_Isolated):
         self.assertFalse(views[0].busy)
 
 
+class TestListMachinesLiveProbe(_Isolated):
+    """list_machines(probe=True)：并发实时探测并合并进 MachineView。"""
+
+    def test_probe_merges_live_fields_per_machine(self):
+        reg = {
+            "a": _machine(alias="a", host="ha"),
+            "b": _machine(alias="b", host="hb"),
+        }
+        out_a = (
+            "LOAD 0.52 0.61 0.55\nCPUS 64\nCPU_MODEL Intel Xeon\n"
+            "MEM_TOTAL_KB 131072000\nMEM_AVAIL_KB 65536000\n"
+            "NPU_BEGIN\nCARD 0 910B4 20 3425 65536\nNPU_END\n"
+        )
+        out_b = (
+            "LOAD 1.5 1.2 1.0\nCPUS 128\nCPU_MODEL Kunpeng\n"
+            "MEM_TOTAL_KB 262144000\nMEM_AVAIL_KB 131072000\nNPU_SMI_MISSING\n"
+        )
+
+        def fake_run(endpoint, script, timeout_sec=60, input_bytes=None):
+            if endpoint.host == "ha":
+                return _proc(0, out_a)
+            return _proc(0, out_b)
+
+        with mock.patch.object(config, "load_machines", return_value=reg):
+            with mock.patch.object(ssh, "ssh_run", side_effect=fake_run) as run:
+                views = machines.list_machines(probe=True)
+        self.assertEqual(run.call_count, 2)
+        by_alias = {v.alias: v for v in views}
+        a, b = by_alias["a"], by_alias["b"]
+        self.assertTrue(a.reachable)
+        self.assertIsNone(a.probe_error)
+        self.assertIsNotNone(a.probed_at)
+        self.assertEqual(a.load["1m"], 0.52)
+        self.assertEqual(a.cpu["cores"], 64)
+        self.assertEqual(a.cpu["model"], "Intel Xeon")
+        self.assertEqual(a.mem["available_gb"], 62.5)
+        self.assertIsNotNone(a.npu_cards)  # 探针成功：实时数据替换 verify 快照
+        self.assertEqual(a.npu_cards[0]["aicore_pct"], 20)
+        self.assertEqual(a.npu_cards[0]["hbm_used_mb"], 3425)
+        self.assertTrue(a.npu_smi)
+        self.assertTrue(b.reachable)
+        self.assertEqual(b.load["1m"], 1.5)
+        self.assertFalse(b.npu_smi)
+        self.assertEqual(b.npu_cards, [])  # npu-smi 缺失 → 实时空数组
+
+    def test_probe_failure_keeps_verify_snapshot(self):
+        reg = {"a": _machine(alias="a", host="ha")}
+        with mock.patch.object(config, "load_machines", return_value=reg):
+            with mock.patch.object(ssh, "ssh_run", return_value=_proc(0, json.dumps(_ok_facts()))):
+                machines.verify_machine(reg["a"])
+
+        def fake_run(endpoint, script, timeout_sec=60, input_bytes=None):
+            raise ssh.SSHError("connect timeout")
+
+        with mock.patch.object(config, "load_machines", return_value=reg):
+            with mock.patch.object(ssh, "ssh_run", side_effect=fake_run):
+                views = machines.list_machines(probe=True)
+        view = views[0]
+        self.assertFalse(view.reachable)
+        self.assertIn("timeout", view.probe_error)
+        self.assertIsNone(view.load)
+        # 探测失败：npu_cards 保留 verify 快照
+        self.assertEqual(len(view.npu_cards), 2)
+        self.assertEqual(view.npu_cards[0]["hbm_used_mb"], 3425)
+
+    def test_probe_no_machines_no_ssh(self):
+        with mock.patch.object(config, "load_machines", return_value={}):
+            with mock.patch.object(ssh, "ssh_run") as run:
+                views = machines.list_machines(probe=True)
+        self.assertEqual(views, [])
+        run.assert_not_called()
+
+
 class TestMachineStatus(_Isolated):
     def test_missing_alias_raises_clean_error(self):
         with mock.patch.object(config, "load_machines", return_value={}):
@@ -276,6 +349,7 @@ class TestMachineStatus(_Isolated):
         self.assertEqual(st.npu[0]["aicore_pct"], 12)
         self.assertEqual(st.npu[0]["hbm_used_mb"], 3425)
         self.assertEqual(st.npu[0]["hbm_total_mb"], 65536)
+        self.assertIsNotNone(st.probed_at)
 
     def test_probe_npu_smi_missing(self):
         out = "LOAD 0.1 0.2 0.3\nCPUS 4\nNPU_SMI_MISSING\n"
@@ -319,10 +393,33 @@ class TestHandlers(_Isolated):
         with mock.patch.object(config, "load_machines", return_value={"a": _machine(alias="a")}):
             result = machines.cli_machines(self._args())
         self.assertEqual(result["count"], 1)
+        self.assertFalse(result["probed"])
         self.assertEqual(result["machines"][0]["alias"], "a")
         self.assertIn("busy", result["machines"][0])
         self.assertIn("jobs", result["machines"][0])
         self.assertIn("npu_cards", result["machines"][0])
+        # 未 probe：实时字段保持默认（无 SSH 调用）
+        m0 = result["machines"][0]
+        self.assertTrue(m0["reachable"])
+        self.assertIsNone(m0["load"])
+        self.assertIsNone(m0["probed_at"])
+
+    def test_cli_machines_probe_live(self):
+        out = (
+            "LOAD 0.5 0.6 0.7\nCPUS 64\nCPU_MODEL Xeon\n"
+            "MEM_TOTAL_KB 131072000\nMEM_AVAIL_KB 65536000\nNPU_SMI_MISSING\n"
+        )
+        with mock.patch.object(config, "load_machines", return_value={"a": _machine(alias="a")}):
+            with mock.patch.object(ssh, "ssh_run", return_value=_proc(0, out)):
+                result = machines.cli_machines(self._args(probe=True))
+        self.assertTrue(result["probed"])
+        m0 = result["machines"][0]
+        self.assertTrue(m0["reachable"])
+        self.assertEqual(m0["load"]["1m"], 0.5)
+        self.assertEqual(m0["cpu"]["cores"], 64)
+        self.assertEqual(m0["npu_cards"], [])
+        self.assertFalse(m0["npu_smi"])
+        self.assertIsNotNone(m0["probed_at"])
 
     def test_cli_machines_includes_per_card_utilization_from_verify(self):
         """verify 后 machines 输出每卡 HBM/AICore 实测占用（sidecar 驱动）。"""

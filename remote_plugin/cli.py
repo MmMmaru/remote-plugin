@@ -64,7 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("verify", help="验证单台机器并写结构化 facts（不覆盖 Markdown）")
     p.add_argument("alias")
 
-    sub.add_parser("machines", help="列出所有机器一览")
+    p = sub.add_parser("machines", help="列出所有机器一览（--probe 并发实时探测）")
+    p.add_argument(
+        "--probe", action="store_true",
+        help="并发实时 SSH 探测所有机器（负载/内存/CPU/NPU 每卡利用率）",
+    )
 
     p = sub.add_parser("status", help="单机详情")
     p.add_argument("alias")

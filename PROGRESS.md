@@ -114,3 +114,11 @@
 
 - 修正 A3 `npu-smi` 的 Chip 行误判：按 `Phy-ID` 生成 0..15 逻辑卡 index，并保留 HBM 数据。
 - 增加 A3 两行布局回归测试；真实 `17.111` verify 返回 `ok`、16 卡、`cards_match=true`。
+
+### 08-18 13:14
+
+- `remote machines` 新增 `--probe`：并发（上限 min(机器数,8)）对全部机器跑实时状态探针，
+  load/mem/cpu/NPU 每卡利用率合并进各机视图；探针成功用实时每卡数据替换 `npu_cards`
+  （verify 快照），失败保留快照并标 `reachable=false/probe_error`；`status` 输出补 `probed_at`。
+- 改动：`machines.py`（`_probe_machine_live` + `_apply_live_probes` + `list_machines(probe)`）、
+  `cli.py`（`--probe`）、`SKILL.md` / `PRD.md` / 单测；212 条 unittest 全绿（新增 4 条）。

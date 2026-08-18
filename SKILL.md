@@ -50,7 +50,8 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
    再读人类维护的 `state/docs/<alias>.md`及 `state/docs/overall.md` 了解补充说明。facts 文件缺失或过期时先
    `remote verify <alias>` 刷新；verify 不创建、不修改 Markdown。
 3. **干活前查占用。** `remote machines` 查看各机 running jobs 的 owner/task/资源占用，
-   避开被占用的机器与资源；`remote status <alias> [--probe]` 看单机详情。
+   避开被占用的机器与资源；`remote status <alias> [--probe]` 看单机详情。需要各机
+   实时负载/内存/NPU 利用率时用 `remote machines --probe`（并发探测，约等于最慢一台的耗时）。
 4. **长任务显式声明任务。** 后台任务必须带 `--background --task "<做什么>"`；NPU
    任务再用 `--cards <卡号>` 声明卡占用（如 `--cards 0,1`），其他 agent 才能经
    `remote machines` 看到并避让。PPU 没有已实现的等价卡级占用语义时不要填写
@@ -78,7 +79,7 @@ remote-plugin 是一个 CLI-only 远程开发插件。**唯一形态是 CLI**：
 | 命令 | 用途 |
 |---|---|
 | `remote install` | 将当前插件入口原子安装为 `~/.local/bin/remote`，安装后可从任意目录调用 |
-| `remote machines` | 所有机器一览：tags、占用（owner/task/资源）、以及 NPU 机器最近 verify 的每卡 HBM/AICore 实测 |
+| `remote machines [--probe]` | 所有机器一览：tags、占用（owner/task/资源）、每卡 HBM/AICore 实测；`--probe` 并发实时探测各机负载/内存/CPU/NPU 每卡利用率（成功时替换最近 verify 的静态值，失败机器保留快照并标 `probe_error`） |
 | `remote status <alias> [--probe]` | 单机详情；`--probe` 实时查通用负载，NPU 机器额外查 NPU 利用率/显存 |
 | `remote verify <alias>` | 环境探测，刷新 `state/docs/<alias>.facts.json`；不覆盖人类 Markdown |
 | `remote up <alias> [--password-env NAME | --password-stdin]` | 容器模式拉起/复用容器；SSH 模式只做免密引导与工作区初始化 |

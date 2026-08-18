@@ -182,7 +182,7 @@ verify 探测结果写成结构化 JSON `state/docs/<alias>.facts.json`，供 ag
 
 ### 3.3 查询
 
-- **broadcast**：`remote machines` → 所有机器一览：alias、模式、tags、占用状态（空闲 / running jobs 的 owner、task、卡占用 / stale）、每卡实测利用率（`npu_cards`：HBM 用量/总量 + AICore%，来自最近一次 verify）、最近 verify 结论
+- **broadcast**：`remote machines` → 所有机器一览：alias、模式、tags、占用状态（空闲 / running jobs 的 owner、task、卡占用 / stale）、每卡实测利用率（`npu_cards`：HBM 用量/总量 + AICore%，来自最近一次 verify）、最近 verify 结论；`remote machines --probe` 并发实时探测所有机器（负载/内存/CPU/每卡 NPU 利用率），探针成功的机器 `npu_cards` 为实时值并附 `load/mem/cpu/npu_smi/probed_at`，失败的机器保留 verify 快照并标 `probe_error`
 - **点对点**：`remote status <alias>` → 单机详情 + 可选 `--probe` 实时 SSH 查负载与每卡 NPU 利用率/显存
 - **内核函数**：`list_machines() -> list[MachineView]`、`machine_status(alias: str, probe: bool) -> MachineStatus`
 - 这是 agent "一条命令看机器占用" 的入口

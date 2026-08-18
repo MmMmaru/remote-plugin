@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,7 +56,15 @@ class MachineView:
     verify_status: str | None
     verified_at: str | None
     jobs: list
-    npu_cards: list | None = None  # 每卡实测占用（HBM/AICore），来自最近一次 verify
+    npu_cards: list | None = None  # 每卡实测占用（HBM/AICore）：probe 模式为实时值，否则最近 verify
+    # ---- 实时探测（list_machines(probe=True) 时填充，否则保持默认值）----
+    reachable: bool = True
+    probe_error: str | None = None
+    probed_at: str | None = None
+    load: dict | None = None
+    mem: dict | None = None
+    cpu: dict | None = None
+    npu_smi: bool | None = None
 
     @property
     def busy(self) -> bool:
@@ -78,6 +87,7 @@ class MachineStatus:
     verified_at: str | None = None
     reachable: bool = True
     probe_error: str | None = None
+    probed_at: str | None = None
     load: dict | None = None
     mem: dict | None = None
     cpu: dict | None = None
@@ -235,8 +245,13 @@ def _read_verify_summary(
 # ---------------------------------------------------------------- machines 一览
 
 
-def list_machines() -> list[MachineView]:
-    """所有机器一览：alias/mode/tags/占用（state/jobs 的 running 记录）/最近 verify。"""
+def list_machines(probe: bool = False) -> list[MachineView]:
+    """所有机器一览：alias/mode/tags/占用（state/jobs 的 running 记录）/最近 verify。
+
+    ``probe=True`` 时并发对全部机器执行实时状态探针（load/mem/cpu/NPU 每卡利用率）：
+    探针成功的机器用实时每卡数据替换 ``npu_cards``；失败的机器保留 verify 快照并
+    标记 ``reachable=False + probe_error``。
+    """
     machines = config.load_machines()
     st = config.state_dir()
     jobs_by_machine = _running_jobs_by_machine(st)
@@ -255,7 +270,41 @@ def list_machines() -> list[MachineView]:
                 npu_cards=vcards,
             )
         )
+    if probe:
+        _apply_live_probes(views, machines, st)
     return views
+
+
+def _apply_live_probes(
+    views: list[MachineView], machines: dict[str, Machine], st: Path
+) -> None:
+    """并发对全部机器执行实时状态探针并合并进各 MachineView。
+
+    每台机器一个线程（SSH 是网络 I/O，线程足够），并发上限 min(机器数, 8)；
+    整体耗时≈最慢一台探针（不可达机器受 STATUS_TIMEOUT_SEC 约束）。
+    """
+    by_alias = {v.alias: v for v in views}
+    if not by_alias:
+        return
+    workers = max(1, min(len(by_alias), 8))
+
+    def probe_one(alias: str) -> None:
+        view = by_alias[alias]
+        live = _probe_machine_live(machines[alias], st)
+        if live.get("reachable") is True:
+            # 实时数据替换 verify 快照；npu-smi 缺失时为空数组
+            view.npu_cards = live.get("npu") or []
+        # 探测失败：保留 verify 快照，只标记不可达原因
+        view.reachable = bool(live.get("reachable"))
+        view.probe_error = live.get("probe_error")
+        view.probed_at = live.get("probed_at")
+        view.load = live.get("load")
+        view.mem = live.get("mem")
+        view.cpu = live.get("cpu")
+        view.npu_smi = live.get("npu_smi")
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(probe_one, sorted(by_alias)))
 
 
 def _running_jobs_by_machine(st: Path) -> dict[str, list[dict]]:
@@ -310,6 +359,31 @@ def _read_job_meta(job_dir: Path) -> dict | None:
 # ---------------------------------------------------------------- status 详情
 
 
+def _probe_machine_live(machine: Machine, st: Path) -> dict:
+    """对单台机器执行实时状态探针（load/mem/cpu/npu），返回可合并字段 dict。
+
+    失败不抛异常：SSH 错误/脚本 rc!=0 → ``{reachable: False, probe_error}``；
+    成功 → ``{reachable: True, probe_error: None, load/mem/cpu/npu/npu_smi/probed_at}``。
+    """
+    ep = config.resolve_endpoint(machine, st)
+    script = _STATUS_PROBE_SCRIPT.replace("__NPU_PARSE__", NPU_PARSE_AWK)
+    err_fields = {"load": None, "mem": None, "cpu": None, "npu": None, "npu_smi": None}
+    try:
+        r = ssh.ssh_run(ep, script, timeout_sec=STATUS_TIMEOUT_SEC)
+    except ssh.SSHError as e:
+        return {"reachable": False, "probe_error": str(e), "probed_at": _now(), **err_fields}
+    if r.returncode != 0:
+        err = (r.stderr or b"").decode("utf-8", "replace").strip()[:1000]
+        return {
+            "reachable": False,
+            "probe_error": f"probe 失败（rc={r.returncode}）: {err}",
+            "probed_at": _now(),
+            **err_fields,
+        }
+    parsed = _parse_status_output((r.stdout or b"").decode("utf-8", "replace"))
+    return {"reachable": True, "probe_error": None, "probed_at": _now(), **parsed}
+
+
 def machine_status(alias: str, probe: bool) -> MachineStatus:
     """单机详情；probe=True 时实时 SSH 查负载、内存、CPU 与 npu-smi 利用率。"""
     machines = config.load_machines()
@@ -332,20 +406,12 @@ def machine_status(alias: str, probe: bool) -> MachineStatus:
     )
     if not probe:
         return MachineStatus(**base)
-
-    ep = config.resolve_endpoint(m, st)
-    script = _STATUS_PROBE_SCRIPT.replace("__NPU_PARSE__", NPU_PARSE_AWK)
-    try:
-        r = ssh.ssh_run(ep, script, timeout_sec=STATUS_TIMEOUT_SEC)
-    except ssh.SSHError as e:
-        return MachineStatus(reachable=False, probe_error=str(e), **base)
-    if r.returncode != 0:
-        err = (r.stderr or b"").decode("utf-8", "replace").strip()[:1000]
-        return MachineStatus(
-            reachable=False, probe_error=f"probe 失败（rc={r.returncode}）: {err}", **base
+    live = _probe_machine_live(m, st)
+    return MachineStatus(**base, **{
+        k: live.get(k) for k in (
+            "reachable", "probe_error", "probed_at", "load", "mem", "cpu", "npu", "npu_smi",
         )
-    parsed = _parse_status_output((r.stdout or b"").decode("utf-8", "replace"))
-    return MachineStatus(reachable=True, **parsed, **base)
+    })
 
 
 def _as_num_or_str(value: str) -> Any:
@@ -429,7 +495,7 @@ def cli_verify(args) -> dict:
 
 
 def cli_machines(args) -> dict:
-    views = list_machines()
+    views = list_machines(probe=bool(getattr(args, "probe", False)))
     return {
         "machines": [
             {
@@ -441,10 +507,18 @@ def cli_machines(args) -> dict:
                 "busy": v.busy,
                 "jobs": v.jobs,
                 "npu_cards": v.npu_cards,
+                "reachable": v.reachable,
+                "probe_error": v.probe_error,
+                "probed_at": v.probed_at,
+                "load": v.load,
+                "mem": v.mem,
+                "cpu": v.cpu,
+                "npu_smi": v.npu_smi,
             }
             for v in views
         ],
         "count": len(views),
+        "probed": bool(getattr(args, "probe", False)),
     }
 
 
@@ -463,6 +537,7 @@ def cli_status(args) -> dict:
         "verified_at": st.verified_at,
         "reachable": st.reachable,
         "probe_error": st.probe_error,
+        "probed_at": st.probed_at,
         "load": st.load,
         "mem": st.mem,
         "cpu": st.cpu,
